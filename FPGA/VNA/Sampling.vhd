@@ -35,16 +35,15 @@ entity Sampling is
            RESET : in  STD_LOGIC;
 			  ADC_PRESCALER : in STD_LOGIC_VECTOR(7 downto 0);
 			  PHASEINC : in STD_LOGIC_VECTOR(11 downto 0);
-           PORT1 : in  STD_LOGIC_VECTOR (15 downto 0);
-           PORT2 : in  STD_LOGIC_VECTOR (15 downto 0);
-           REF : in  STD_LOGIC_VECTOR (15 downto 0);
+           PORT1 : in  STD_LOGIC_VECTOR (17 downto 0);
+           PORT2 : in  STD_LOGIC_VECTOR (17 downto 0);
+           REF : in  STD_LOGIC_VECTOR (17 downto 0);
 			  ADC_START : out STD_LOGIC;
            NEW_SAMPLE : in  STD_LOGIC;
            DONE : out  STD_LOGIC;
            PRE_DONE : out  STD_LOGIC;
            START : in  STD_LOGIC;
            SAMPLES : in  STD_LOGIC_VECTOR (12 downto 0);
-			  WINDOW_TYPE : in STD_LOGIC_VECTOR (1 downto 0);
            PORT1_I : out  STD_LOGIC_VECTOR (47 downto 0);
            PORT1_Q : out  STD_LOGIC_VECTOR (47 downto 0);
            PORT2_I : out  STD_LOGIC_VECTOR (47 downto 0);
@@ -63,13 +62,16 @@ COMPONENT SinCos
     sine : OUT STD_LOGIC_VECTOR(15 DOWNTO 0)
   );
 END COMPONENT;
-COMPONENT SinCosMult
-  PORT (
-    clk : IN STD_LOGIC;
-    a : IN STD_LOGIC_VECTOR(15 DOWNTO 0);
-    b : IN STD_LOGIC_VECTOR(15 DOWNTO 0);
-    p : OUT STD_LOGIC_VECTOR(31 DOWNTO 0)
-  );
+COMPONENT DSP_SLICE
+	PORT (
+		clk : IN STD_LOGIC;
+		ce : IN STD_LOGIC;
+		sel : IN STD_LOGIC_VECTOR(0 DOWNTO 0);
+		a : IN STD_LOGIC_VECTOR(17 DOWNTO 0);
+		b : IN STD_LOGIC_VECTOR(17 DOWNTO 0);
+		c : IN STD_LOGIC_VECTOR(47 DOWNTO 0);
+		p : OUT STD_LOGIC_VECTOR(47 DOWNTO 0)
+	);
 END COMPONENT;
 COMPONENT window
 PORT(
@@ -80,12 +82,12 @@ PORT(
 	);
 END COMPONENT;
 
-	signal p1_I : signed(47 downto 0);
-	signal p1_Q : signed(47 downto 0);
-	signal p2_I : signed(47 downto 0);
-	signal p2_Q : signed(47 downto 0);
-	signal r_I : signed(47 downto 0);
-	signal r_Q : signed(47 downto 0);
+	signal p1_I : std_logic_vector(47 downto 0);
+	signal p1_Q : std_logic_vector(47 downto 0);
+	signal p2_I : std_logic_vector(47 downto 0);
+	signal p2_Q : std_logic_vector(47 downto 0);
+	signal r_I : std_logic_vector(47 downto 0);
+	signal r_Q : std_logic_vector(47 downto 0);
 	signal clk_cnt : integer range 0 to 255;
 	signal sample_cnt : integer range 0 to 131071;
 	signal samples_to_take : integer range 0 to 131071;
@@ -94,24 +96,15 @@ END COMPONENT;
 	signal sine : std_logic_vector(15 downto 0);
 	signal cosine : std_logic_vector(15 downto 0);
 	
-	signal windowed_sine : std_logic_vector(31 downto 0);
-	signal windowed_cosine : std_logic_vector(31 downto 0);
+	signal mult_a : std_logic_vector(17 downto 0);
+	signal mult_b : std_logic_vector(17 downto 0);
+	signal mult_c : std_logic_vector(47 downto 0);
+	signal mult_p : std_logic_vector(47 downto 0);
 	
-	signal window_index : std_logic_vector(6 downto 0);
-	signal window_value : std_logic_vector(15 downto 0);
-	signal window_sample_cnt : integer range 0 to 8191;
-	signal window_index_inc : integer range 0 to 8;
-	signal window_sample_compare : integer range 0 to 8191;
-	signal window_sample_cnt_inc : integer range 0 to 8;
+	signal mult_enable : std_logic;
+	signal mult_accumulate : std_logic_vector(0 downto 0);
 	
-	signal mult1_I : std_logic_vector(31 downto 0);
-	signal mult1_Q : std_logic_vector(31 downto 0);
-	signal mult2_I : std_logic_vector(31 downto 0);
-	signal mult2_Q : std_logic_vector(31 downto 0);
-	signal multR_I : std_logic_vector(31 downto 0);
-	signal multR_Q : std_logic_vector(31 downto 0);
-	
-	type States is (Idle, Sampling, WaitForMult, Accumulating, Ready);
+	type States is (Idle, Sampling, P1Q, P2I, P2Q, RI, RQ, SaveP1Q, SaveP2I, SaveP2Q, SaveRI, SaveRQ, Ready);
 	signal state : States;
 begin
 -- Always fails for simulation, comment out
@@ -126,70 +119,21 @@ begin
 		cosine => cosine,
 		sine => sine
 	);
-	Port1_I_Mult : SinCosMult
+
+	Mult : DSP_SLICE
 	PORT MAP (
 		clk => CLK,
-		a => PORT1,
-		b => windowed_cosine(31 downto 16),
-		p => mult1_I
-	);
-	Port1_Q_Mult : SinCosMult
-	PORT MAP (
-		clk => CLK,
-		a => PORT1,
-		b => windowed_sine(31 downto 16),
-		p => mult1_Q
-	);
-	Port2_I_Mult : SinCosMult
-	PORT MAP (
-		clk => CLK,
-		a => PORT2,
-		b => windowed_cosine(31 downto 16),
-		p => mult2_I
-	);
-	Port2_Q_Mult : SinCosMult
-	PORT MAP (
-		clk => CLK,
-		a => PORT2,
-		b => windowed_sine(31 downto 16),
-		p => mult2_Q
-	);
-	Ref_I_Mult : SinCosMult
-	PORT MAP (
-		clk => CLK,
-		a => REF,
-		b => windowed_cosine(31 downto 16),
-		p => multR_I
-	);
-	Ref_Q_Mult : SinCosMult
-	PORT MAP (
-		clk => CLK,
-		a => REF,
-		b => windowed_sine(31 downto 16),
-		p => multR_Q
+		ce => mult_enable,
+		sel => mult_accumulate,
+		a => mult_a,
+		b => mult_b,
+		c => mult_c,
+		p => mult_p
 	);
 	
-	Sine_Mult : SinCosMult
-	PORT MAP (
-		clk => CLK,
-		a => window_value,
-		b => sine,
-		p => windowed_sine
-	);
-	Cosine_Mult : SinCosMult
-	PORT MAP (
-		clk => CLK,
-		a => window_value,
-		b => cosine,
-		p => windowed_cosine
-	);
-	WindowROM: window PORT MAP(
-		CLK => CLK,
-		INDEX => window_index,
-		WINDOW_TYPE => WINDOW_TYPE,
-		VALUE => window_value
-	);
-		
+	-- sign extend b input of multiplier (sin/cos)
+	mult_b(17 downto 16) <= mult_b(15) & mult_b(15);
+	
 	process(CLK, RESET)
 	begin
 		if rising_edge(CLK) then
@@ -201,14 +145,16 @@ begin
 				ACTIVE <= '0';
 				clk_cnt <= 0;
 				sample_cnt <= 0;
-				window_sample_cnt <= 0;
-				window_index <= (others => '0');
 				phase <= (others => '0');
+				mult_enable <= '0';
+				mult_accumulate <= "0";
 			else
 				-- when not idle, generate pulses for ADCs
 				if state /= Idle then
 					if clk_cnt = unsigned(ADC_PRESCALER) - 1 then
-						ADC_START <= '1';
+						if sample_cnt < samples_to_take then
+							ADC_START <= '1';
+						end if;
 						clk_cnt <= 0;
 					else
 						clk_cnt <= clk_cnt + 1;
@@ -226,84 +172,125 @@ begin
 						ACTIVE <= '0';
 						clk_cnt <= 0;
 						phase <= (others => '0');
-						p1_I <= (others => '0');
-						p1_Q <= (others => '0');
-						p2_I <= (others => '0');
-						p2_Q <= (others => '0');
-						r_I <= (others => '0');
-						r_Q <= (others => '0');
-						phase <= (others => '0');
+						mult_enable <= '0';
+						mult_accumulate <= "0";
 						if START = '1' then
 							state <= Sampling;
-							samples_to_take <= to_integer(unsigned(SAMPLES & "0000") - 1);
-							window_sample_compare <= to_integer(unsigned(SAMPLES) - 1);
-							case SAMPLES is
-								when "0000000000001" =>
-									-- 16 samples, increment on every sample by 8
-									window_sample_cnt_inc <= 1;
-									window_index_inc <= 8;
-								when "0000000000010" | "0000000000011" =>
-									-- 32-48 samples, increment by 4
-									window_sample_cnt_inc <= 2;
-									window_index_inc <= 4;
-								when "0000000000100" | "0000000000101" | "0000000000110" | "0000000000111"=>
-									-- 64-112 samples, increment by 2
-									window_sample_cnt_inc <= 4;
-									window_index_inc <= 2;									
-								when others =>
-									-- 128 or more samples, increment by 1
-									window_sample_cnt_inc <= 8;
-									window_index_inc <= 1;
-								end case;
+							samples_to_take <= to_integer(unsigned(SAMPLES & "0000"));
 						end if;
 					when Sampling =>
 						DONE <= '0';
 						PRE_DONE <= '0';
 						ACTIVE <= '1';
+						mult_enable <= '0';
 						if NEW_SAMPLE = '1' then
-							state <= WaitForMult;
+							sample_cnt <= sample_cnt + 1;
+							mult_enable <= '1';
+							mult_a <= PORT1;
+							mult_b(15 downto 0) <= cosine;
+							mult_c <= p1_I;
+							state <= P1Q;
 						end if;
-					when WaitForMult =>
-						DONE <= '0';
-						PRE_DONE <= '0';
-						ACTIVE <= '1';
-						state <= Accumulating;
-					when Accumulating =>
-						-- multipliers are finished with the sample
-						p1_I <= p1_I + signed(mult1_I);
-						p1_Q <= p1_Q + signed(mult1_Q);
-						p2_I <= p2_I + signed(mult2_I);
-						p2_Q <= p2_Q + signed(mult2_Q);
-						r_I <= r_I + signed(multR_I);
-						r_Q <= r_Q + signed(multR_Q);
-						-- advance phase
+					when P1Q =>
 						ACTIVE <= '1';
 						DONE <= '0';
 						PRE_DONE <= '0';
+						mult_enable <= '1';
+						mult_a <= PORT1;
+						mult_b(15 downto 0) <= sine;
+						mult_c <= p1_Q;
+						state <= P2I;
+					when P2I =>
+						ACTIVE <= '1';
+						DONE <= '0';
+						PRE_DONE <= '0';
+						mult_enable <= '1';
+						mult_a <= PORT2;
+						mult_b(15 downto 0) <= cosine;
+						mult_c <= p2_I;
+						state <= P2Q;
+					when P2Q =>
+						ACTIVE <= '1';
+						DONE <= '0';
+						PRE_DONE <= '0';
+						mult_enable <= '1';
+						mult_a <= PORT2;
+						mult_b(15 downto 0) <= sine;
+						mult_c <= p2_Q;
+						state <= RI;
+					when RI =>
+						ACTIVE <= '1';
+						DONE <= '0';
+						PRE_DONE <= '0';
+						mult_enable <= '1';
+						mult_a <= REF;
+						mult_b(15 downto 0) <= cosine;
+						mult_c <= r_I;
+						state <= RQ;						
+					when RQ =>
+						ACTIVE <= '1';
+						DONE <= '0';
+						PRE_DONE <= '0';
+						mult_enable <= '1';
+						mult_a <= REF;
+						mult_b(15 downto 0) <= sine;
+						mult_c <= r_Q;
+						-- first result is available
+						p1_I <= mult_p;
+						state <= SaveP1Q;
+					when SaveP1Q =>
+						ACTIVE <= '1';
+						DONE <= '0';
+						PRE_DONE <= '0';
+						mult_enable <= '1';
+						p1_Q <= mult_p;
+						state <= SaveP2I;
+					when SaveP2I =>
+						ACTIVE <= '1';
+						DONE <= '0';
+						PRE_DONE <= '0';
+						mult_enable <= '1';
+						p2_I <= mult_p;
+						state <= SaveP2Q;
+					when SaveP2Q =>
+						ACTIVE <= '1';
+						DONE <= '0';
+						PRE_DONE <= '0';
+						mult_enable <= '1';
+						p2_Q <= mult_p;
+						state <= SaveRI;
+					when SaveRI =>
+						ACTIVE <= '1';
+						DONE <= '0';
+						PRE_DONE <= '0';
+						mult_enable <= '1';
+						r_I <= mult_p;
+						state <= SaveRQ;
+					when SaveRQ =>
+						ACTIVE <= '1';
+						DONE <= '0';
+						PRE_DONE <= '0';
+						mult_enable <= '0';
+						r_Q <= mult_p;
+						-- from now on accumulate results
+						mult_accumulate <= "1";
 						phase <= std_logic_vector(unsigned(phase) + unsigned(PHASEINC));
 						if sample_cnt < samples_to_take then
-							sample_cnt <= sample_cnt + 1;
 							state <= Sampling;
 						else
 							state <= Ready;
-						end if;
-						-- keep track of window index
-						if window_sample_cnt < window_sample_compare then
-							window_sample_cnt <= window_sample_cnt + window_sample_cnt_inc;
-						else
-							window_sample_cnt <= window_sample_cnt - window_sample_compare;
-							window_index <= std_logic_vector( unsigned(window_index) + window_index_inc );
 						end if;
 					when Ready =>
 						ACTIVE <= '1';
 						DONE <= '1';
 						PRE_DONE <= '1';
-						PORT1_I <= std_logic_vector(p1_I);
-						PORT1_Q <= std_logic_vector(p1_Q);
-						PORT2_I <= std_logic_vector(p2_I);
-						PORT2_Q <= std_logic_vector(p2_Q);
-						REF_I <= std_logic_vector(r_I);
-						REF_Q <= std_logic_vector(r_Q);
+						mult_enable <= '0';
+						PORT1_I <= p1_I;
+						PORT1_Q <= p1_Q;
+						PORT2_I <= p2_I;
+						PORT2_Q <= p2_Q;
+						REF_I <= r_I;
+						REF_Q <= r_Q;
 						state <= Idle;
 				end case;
 			end if;

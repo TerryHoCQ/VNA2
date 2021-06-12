@@ -1,7 +1,7 @@
 #include "tilewidget.h"
 #include "ui_tilewidget.h"
 #include <QDebug>
-#include "Traces/tracebodeplot.h"
+#include "Traces/tracexyplot.h"
 #include "Traces/tracesmithchart.h"
 
 TileWidget::TileWidget(TraceModel &model, QWidget *parent) :
@@ -26,6 +26,73 @@ TileWidget::TileWidget(TraceModel &model, QWidget *parent) :
 TileWidget::~TileWidget()
 {
     delete ui;
+}
+
+void TileWidget::clear()
+{
+    if(hasContent) {
+        delete content;
+        hasContent = false;
+    }
+    if(isSplit) {
+        delete child1;
+        delete child2;
+        isSplit = false;
+        delete splitter;
+    }
+}
+
+nlohmann::json TileWidget::toJSON()
+{
+    nlohmann::json j;
+    j["split"] = isSplit;
+    if(isSplit) {
+        j["orientation"] = splitter->orientation() == Qt::Horizontal ? "horizontal" : "vertical";
+        j["sizes"] = splitter->sizes();
+        j["tile1"] = child1->toJSON();
+        j["tile2"] = child2->toJSON();
+    }
+    if(hasContent) {
+        std::string plotname;
+        switch(content->getType()) {
+        case TracePlot::Type::SmithChart:
+            plotname = "smithchart";
+            break;
+        case TracePlot::Type::XYPlot:
+            plotname = "XY-plot";
+            break;
+        }
+        j["plot"] = plotname;
+        j["plotsettings"] = content->toJSON();
+    }
+    return j;
+}
+
+void TileWidget::fromJSON(nlohmann::json j)
+{
+    // delete all childs before parsing json
+    clear();
+    bool split = j.value("split", false);
+    if(split) {
+        if(j["orientation"] == "horizontal") {
+            splitHorizontally();
+        } else {
+            splitVertically();
+        }
+        splitter->setSizes(j["sizes"]);
+        child1->fromJSON(j["tile1"]);
+        child2->fromJSON(j["tile2"]);
+    } else if(j.contains("plot")) {
+        // has a plot enabled
+        auto plotname = j["plot"];
+        if(plotname == "smithchart") {
+            content = new TraceSmithChart(model);
+        } else {
+            content = new TraceXYPlot(model);
+        }
+        setContent(content);
+        content->fromJSON(j["plotsettings"]);
+    }
 }
 
 void TileWidget::splitVertically()
@@ -128,9 +195,11 @@ void TileWidget::on_bSmithchart_clicked()
     setContent(new TraceSmithChart(model));
 }
 
-void TileWidget::on_bBodeplot_clicked()
+void TileWidget::on_bXYplot_clicked()
 {
-    setContent(new TraceBodePlot(model));
+    auto plot = new TraceXYPlot(model);
+    setContent(plot);
+    plot->axisSetupDialog();
 }
 
 void TileWidget::traceDeleted(TracePlot *)

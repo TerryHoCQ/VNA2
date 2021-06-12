@@ -2,8 +2,9 @@
 #include "ui_calibrationtracedialog.h"
 #include "measurementmodel.h"
 #include <QStyle>
+#include "CustomWidgets/informationbox.h"
 
-CalibrationTraceDialog::CalibrationTraceDialog(Calibration *cal, Calibration::Type type) :
+CalibrationTraceDialog::CalibrationTraceDialog(Calibration *cal, Protocol::SweepSettings sweep, Calibration::Type type) :
     QDialog(nullptr),
     ui(new Ui::CalibrationTraceDialog),
     cal(cal),
@@ -21,7 +22,17 @@ CalibrationTraceDialog::CalibrationTraceDialog(Calibration *cal, Calibration::Ty
     ui->tableView->setColumnWidth(1, 350);
     ui->tableView->setColumnWidth(2, 320);
     ui->tableView->setColumnWidth(3, 160);
-    UpdateApplyButton();
+    UpdateCalibrationStatus();
+
+    // Check calibration kit span
+    if(type != Calibration::Type::None) {
+        auto kit = cal->getCalibrationKit();
+        auto isTRL = type == Calibration::Type::TRL;
+        if(kit.minFreq(isTRL) > sweep.f_start || kit.maxFreq(isTRL) < sweep.f_stop) {
+            InformationBox::ShowMessage("Warning", "The calibration kit does not completely cover the currently selected span. "
+                                        "Applying a calibration will not be possible for any measurements taken with these settings.");
+        }
+    }
 }
 
 CalibrationTraceDialog::~CalibrationTraceDialog()
@@ -32,11 +43,19 @@ CalibrationTraceDialog::~CalibrationTraceDialog()
 void CalibrationTraceDialog::measurementComplete(Calibration::Measurement m)
 {
     model->measurementUpdated(m);
-    UpdateApplyButton();
+    UpdateCalibrationStatus();
 }
 
-void CalibrationTraceDialog::UpdateApplyButton()
+void CalibrationTraceDialog::UpdateCalibrationStatus()
 {
+    if(!cal->calculationPossible(cal->getType())) {
+        // some trace for the current calibration was deleted
+        cal->resetErrorTerms();
+        emit calibrationInvalidated();
+    } else {
+        // update error terms as a measurement might have changed
+        cal->constructErrorTerms(cal->getType());
+    }
     ui->bApply->setEnabled(cal->calculationPossible(requestedType));
 }
 
@@ -45,7 +64,7 @@ void CalibrationTraceDialog::on_bDelete_clicked()
     auto measurement = measurements[ui->tableView->currentIndex().row()];
     cal->clearMeasurement(measurement);
     model->measurementUpdated(measurement);
-    UpdateApplyButton();
+    UpdateCalibrationStatus();
 }
 
 void CalibrationTraceDialog::on_bMeasure_clicked()
@@ -58,18 +77,4 @@ void CalibrationTraceDialog::on_bApply_clicked()
 {
     emit applyCalibration(requestedType);
     accept();
-}
-
-void CalibrationTraceDialog::on_bOpen_clicked()
-{
-    cal->openFromFile();
-    UpdateApplyButton();
-    if(cal->getType() != Calibration::Type::None) {
-        emit applyCalibration(cal->getType());
-    }
-}
-
-void CalibrationTraceDialog::on_bSave_clicked()
-{
-    cal->saveToFile();
 }

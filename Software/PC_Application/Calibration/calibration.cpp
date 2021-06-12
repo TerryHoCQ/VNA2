@@ -3,6 +3,9 @@
 #include <QMessageBox>
 #include <QFileDialog>
 #include <fstream>
+#include "unit.h"
+#include <QDebug>
+#include "Tools/parameters.h"
 
 using namespace std;
 
@@ -17,14 +20,16 @@ Calibration::Calibration()
     measurements[Measurement::Port2Load].datapoints = vector<Protocol::Datapoint>();
     measurements[Measurement::Isolation].datapoints = vector<Protocol::Datapoint>();
     measurements[Measurement::Through].datapoints = vector<Protocol::Datapoint>();
+    measurements[Measurement::Line].datapoints = vector<Protocol::Datapoint>();
 
     type = Type::None;
 }
 
 void Calibration::clearMeasurements()
 {
+    qDebug() << "Clearing all calibration measurements...";
     for(auto m : measurements) {
-        m.second.datapoints.clear();
+        clearMeasurement(m.first);
     }
 }
 
@@ -32,6 +37,7 @@ void Calibration::clearMeasurement(Calibration::Measurement type)
 {
     measurements[type].datapoints.clear();
     measurements[type].timestamp = QDateTime();
+    qDebug() << "Deleted" << MeasurementToString(type) << "measurement";
 }
 
 void Calibration::addMeasurement(Calibration::Measurement type, Protocol::Datapoint &d)
@@ -42,18 +48,41 @@ void Calibration::addMeasurement(Calibration::Measurement type, Protocol::Datapo
 
 bool Calibration::calculationPossible(Calibration::Type type)
 {
+    if(type == Type::None) {
+        // always possible to reset to None
+        return true;
+    }
+    qDebug() << "Checking if" << TypeToString(type) << "calibration is possible...";
+    auto ret = SanityCheckSamples(Measurements(type, false));
+    if(ret) {
+        qDebug() << "...calibration possible";
+    } else {
+        qDebug() << "...calibration not possible";
+    }
     return SanityCheckSamples(Measurements(type, false));
 }
 
 bool Calibration::constructErrorTerms(Calibration::Type type)
 {
+    if(type == Type::None) {
+        resetErrorTerms();
+        return true;
+    }
     if(!calculationPossible(type)) {
         return false;
     }
+    qDebug() << "Constructing error terms for" << TypeToString(type) << "calibration";
     bool isTRL = type == Type::TRL;
-    if(minFreq < kit.minFreq(isTRL) || maxFreq > kit.maxFreq(isTRL)) {
+    double kit_minFreq = kit.minFreq(isTRL);
+    double kit_maxFreq = kit.maxFreq(isTRL);
+    if(minFreq < kit_minFreq || maxFreq > kit_maxFreq) {
         // Calkit does not support complete calibration range
-        QMessageBox::critical(nullptr, "Unable to perform calibration", "The calibration kit does not support the complete span. Please choose a different calibration kit or a narrower span.");
+        QString msg = QString("The calibration kit does not support the complete span.\n\n")
+                + "The measured calibration data covers " + Unit::ToString(minFreq, "Hz", " kMG", 4) + " to " + Unit::ToString(maxFreq, "Hz", " kMG", 4)
+                + ", however the calibration kit is only valid from " + Unit::ToString(kit_minFreq, "Hz", " kMG", 4) + " to " + Unit::ToString(kit_maxFreq, "Hz", " kMG", 4) + ".\n\n"
+                + "Please adjust the calibration kit or the span and take the calibration measurements again.";
+        QMessageBox::critical(nullptr, "Unable to perform calibration", msg);
+        qWarning() << msg;
         return false;
     }
     switch(type) {
@@ -62,7 +91,7 @@ bool Calibration::constructErrorTerms(Calibration::Type type)
     case Type::FullSOLT: construct12TermPoints(); break;
     case Type::TransmissionNormalization: constructTransmissionNormalization(); break;
     case Type::TRL: constructTRL(); break;
-    case Type::None: break;
+    default: break;
     }
     this->type = type;
     return true;
@@ -72,6 +101,7 @@ void Calibration::resetErrorTerms()
 {
     type = Type::None;
     points.clear();
+    qDebug() << "Error terms reset";
 }
 
 void Calibration::construct12TermPoints()
@@ -205,52 +235,6 @@ void Calibration::constructTransmissionNormalization()
     }
 }
 
-template<typename T>
-class Tparam {
-public:
-    Tparam(){};
-    Tparam(T t11, T t12, T t21, T t22)
-        : t11(t11), t12(t12), t21(t21), t22(t22){};
-    void fromSparam(T S11, T S21, T S12, T S22) {
-        t11 = -(S11*S22 - S12*S21) / S21;
-        t12 = S11 / S21;
-        t21 = -S22 / S21;
-        t22 = 1.0 / S21;
-    }
-    void toSparam(T &S11, T &S21, T &S12, T &S22) {
-        S11 = t12 / t22;
-        S21 = T(1) / t22;
-        S12 = (t11*t22 - t12*t21) / t22;
-        S22 = -t21 / t22;
-    }
-    Tparam inverse() {
-        Tparam i;
-        T det = t11*t22 - t12*t21;
-        i.t11 = t22 / det;
-        i.t12 = -t12 / det;
-        i.t21 = -t21 / det;
-        i.t22 = t11 / det;
-        return i;
-    }
-    Tparam operator*(const Tparam &r) {
-        Tparam p;
-        p.t11 = t11*r.t11 + t12*r.t21;
-        p.t12 = t11*r.t12 + t12*r.t22;
-        p.t21 = t21*r.t11 + t22*r.t21;
-        p.t22 = t21*r.t12 + t22*r.t22;
-        return p;
-    }
-    Tparam operator*(const T &r) {
-        Tparam p;
-        p.t11 = t11 * r;
-        p.t12 = t12 * r;
-        p.t21 = t21 * r;
-        p.t22 = t22 * r;
-        return p;
-    }
-    T t11, t12, t21, t22;
-};
-
 template<typename T> void solveQuadratic(T a, T b, T c, T &result1, T &result2)
 {
     T root = sqrt(b * b - T(4) * a * c);
@@ -288,24 +272,24 @@ void Calibration::constructTRL()
         // calculate TRL calibration
         // variable names and formulas according to http://emlab.uiuc.edu/ece451/notes/new_TRL.pdf
         // page 19
-        auto R_T = Tparam<complex<double>>();
-        auto R_D = Tparam<complex<double>>();
-        R_T.fromSparam(S11_through, S21_through, S12_through, S22_through);
-        R_D.fromSparam(S11_line, S21_line, S12_line, S22_line);
+        Sparam Sthrough(S11_through, S12_through, S21_through, S22_through);
+        Sparam Sline(S11_line, S12_line, S21_line, S22_line);
+        auto R_T = Tparam(Sthrough);
+        auto R_D = Tparam(Sline);
         auto T = R_D*R_T.inverse();
         complex<double> a_over_c, b;
         // page 21-22
-        solveQuadratic(T.t21, T.t22 - T.t11, -T.t12, b, a_over_c);
+        solveQuadratic(T.m21, T.m22 - T.m11, -T.m12, b, a_over_c);
         // ensure correct root selection
         // page 23
         if(abs(b) >= abs(a_over_c)) {
             swap(b, a_over_c);
         }
         // page 24
-        auto g = R_T.t22;
-        auto d = R_T.t11 / g;
-        auto e = R_T.t12 / g;
-        auto f = R_T.t21 / g;
+        auto g = R_T.m22;
+        auto d = R_T.m11 / g;
+        auto e = R_T.m12 / g;
+        auto f = R_T.m21 / g;
 
         // page 25
         auto r22_rho22 = g * (1.0 - e / a_over_c) / (1.0 - b / a_over_c);
@@ -331,11 +315,15 @@ void Calibration::constructTRL()
         auto alpha = alpha_a / a;
         auto beta = beta_over_alpha * alpha;
         auto c = a / a_over_c;
-        auto Box_A = Tparam<complex<double>>(r22 * a, r22 * b, r22 * c, r22);
-        auto Box_B = Tparam<complex<double>>(rho22 * alpha, rho22 * beta, rho22 * gamma, rho22);
-        complex<double> dummy1, dummy2;
-        Box_A.toSparam(p.fe00, dummy1, p.fe10e01, p.fe11);
-        Box_B.toSparam(p.fe22, p.fe10e32, dummy1, dummy2);
+        auto Box_A = Tparam(r22 * a, r22 * b, r22 * c, r22);
+        auto Box_B = Tparam(rho22 * alpha, rho22 * beta, rho22 * gamma, rho22);
+        auto S_A = Sparam(Box_A);
+        p.fe00 = S_A.m11;
+        p.fe10e01 = S_A.m12;
+        p.fe11 = S_A.m22;
+        auto S_B = Sparam(Box_B);
+        p.fe22 = S_B.m11;
+        p.fe10e32 = S_B.m21;
         // no isolation measurement available
         p.fe30 = 0.0;
 
@@ -347,10 +335,15 @@ void Calibration::constructTRL()
         rho22 = 1.0/(alpha - beta * gamma);
         r22 = r22_rho22 / rho22;
 
-        Box_A = Tparam<complex<double>>(r22 * a, r22 * b, r22 * c, r22);
-        Box_B = Tparam<complex<double>>(rho22 * alpha, rho22 * beta, rho22 * gamma, rho22);
-        Box_A.toSparam(dummy1, dummy2, p.re23e01, p.re11);
-        Box_B.toSparam(p.re22, p.re23e32, dummy1, p.re33);
+        Box_A = Tparam(r22 * a, r22 * b, r22 * c, r22);
+        Box_B = Tparam(rho22 * alpha, rho22 * beta, rho22 * gamma, rho22);
+        S_A = Sparam(Box_A);
+        p.re23e01 = S_A.m12;
+        p.re11 = S_A.m22;
+        S_B = Sparam(Box_B);
+        p.re22 = S_B.m11;
+        p.re23e32 = S_B.m21;
+        p.re33 = S_B.m22;
         // no isolation measurement available
         p.re03 = 0.0;
 
@@ -395,6 +388,18 @@ void Calibration::correctMeasurement(Protocol::Datapoint &d)
     d.imag_S22 = S22.imag();
 }
 
+void Calibration::correctTraces(Trace &S11, Trace &S12, Trace &S21, Trace &S22)
+{
+    auto points = Trace::assembleDatapoints(S11, S12, S21, S22);
+    if(points.size()) {
+        // succeeded in assembling datapoints
+        for(auto &p : points) {
+            correctMeasurement(p);
+        }
+        Trace::fillFromDatapoints(S11, S12, S21, S22, points);
+    }
+}
+
 Calibration::InterpolationType Calibration::getInterpolation(Protocol::SweepSettings settings)
 {
     if(!points.size()) {
@@ -425,6 +430,17 @@ Calibration::InterpolationType Calibration::getInterpolation(Protocol::SweepSett
     }
 }
 
+Calibration::Measurement Calibration::MeasurementFromString(QString s)
+{
+    for(unsigned int i=0;i<(int)Measurement::Last;i++) {
+        auto m = (Measurement) i;
+        if(s.compare(MeasurementToString(m), Qt::CaseInsensitive)==0) {
+            return m;
+        }
+    }
+    return Measurement::Last;
+}
+
 QString Calibration::MeasurementToString(Calibration::Measurement m)
 {
     switch(m) {
@@ -449,6 +465,17 @@ QString Calibration::MeasurementToString(Calibration::Measurement m)
     default:
         return "Unknown";
     }
+}
+
+Calibration::Type Calibration::TypeFromString(QString s)
+{
+    for(unsigned int i=0;i<(int)Type::Last;i++) {
+        auto t = (Type) i;
+        if(s.compare(TypeToString(t), Qt::CaseInsensitive)==0) {
+            return t;
+        }
+    }
+    return Type::Last;
 }
 
 QString Calibration::TypeToString(Calibration::Type t)
@@ -546,6 +573,10 @@ Calibration::MeasurementInfo Calibration::getMeasurementInfo(Calibration::Measur
         info.name = "Line";
         info.prerequisites = "Port 1 connected to port 2 via line standard";
         break;
+    default:
+        info.name = "Invalid";
+        info.prerequisites = "Invalid";
+        break;
     }
     info.points = measurements[m].datapoints.size();
     if(info.points > 0) {
@@ -570,23 +601,74 @@ std::vector<Trace *> Calibration::getErrorTermTraces()
     }
     for(auto p : points) {
         Trace::Data d;
-        d.frequency = p.frequency;
+        d.x = p.frequency;
         for(int i=0;i<12;i++) {
             switch(i) {
-            case 0: d.S = p.fe00; break;
-            case 1: d.S = p.fe11; break;
-            case 2: d.S = p.fe10e01; break;
-            case 3: d.S = p.fe10e32; break;
-            case 4: d.S = p.fe22; break;
-            case 5: d.S = p.fe30; break;
-            case 6: d.S = p.re33; break;
-            case 7: d.S = p.re11; break;
-            case 8: d.S = p.re23e32; break;
-            case 9: d.S = p.re23e01; break;
-            case 10: d.S = p.re22; break;
-            case 11: d.S = p.re03; break;
+            case 0: d.y = p.fe00; break;
+            case 1: d.y = p.fe11; break;
+            case 2: d.y = p.fe10e01; break;
+            case 3: d.y = p.fe10e32; break;
+            case 4: d.y = p.fe22; break;
+            case 5: d.y = p.fe30; break;
+            case 6: d.y = p.re33; break;
+            case 7: d.y = p.re11; break;
+            case 8: d.y = p.re23e32; break;
+            case 9: d.y = p.re23e01; break;
+            case 10: d.y = p.re22; break;
+            case 11: d.y = p.re03; break;
             }
             traces[i]->addData(d);
+        }
+    }
+    return traces;
+}
+
+std::vector<Trace *> Calibration::getMeasurementTraces()
+{
+    std::vector<Trace*> traces;
+    for(auto m : measurements) {
+        auto info = getMeasurementInfo(m.first);
+        if(info.points > 0) {
+            vector<QString> usedPrefixes;
+            switch(m.first) {
+            case Measurement::Port1Load:
+            case Measurement::Port1Open:
+            case Measurement::Port1Short:
+                usedPrefixes = {"S11"};
+                break;
+            case Measurement::Port2Load:
+            case Measurement::Port2Open:
+            case Measurement::Port2Short:
+                usedPrefixes = {"S22"};
+                break;
+            case Measurement::Through:
+            case Measurement::Line:
+            case Measurement::Isolation:
+                usedPrefixes = {"S11", "S12", "S21", "S22"};
+                break;
+            default:
+                break;
+            }
+            for(auto prefix : usedPrefixes) {
+                auto t = new Trace(prefix + " " + info.name);
+                t->setCalibration(true);
+                t->setReflection(prefix == "S11" || prefix == "S22");
+                for(auto p : m.second.datapoints) {
+                    Trace::Data d;
+                    d.x = p.frequency;
+                    if(prefix == "S11") {
+                        d.y = complex<double>(p.real_S11, p.imag_S11);
+                    } else if(prefix == "S12") {
+                        d.y = complex<double>(p.real_S12, p.imag_S12);
+                    } else if(prefix == "S21") {
+                        d.y = complex<double>(p.real_S21, p.imag_S21);
+                    } else {
+                        d.y = complex<double>(p.real_S22, p.imag_S22);
+                    }
+                    t->addData(d);
+                }
+                traces.push_back(t);
+            }
         }
     }
     return traces;
@@ -601,6 +683,11 @@ bool Calibration::openFromFile(QString filename)
             return false;
         }
     }
+    qDebug() << "Attempting to open calibration from file" << filename;
+
+    // reset all data before loading new calibration
+    clearMeasurements();
+    resetErrorTerms();
 
     // attempt to load associated calibration kit first (needs to be available when performing calibration)
     auto calkit_file = filename;
@@ -609,10 +696,12 @@ bool Calibration::openFromFile(QString filename)
         calkit_file.truncate(dotPos);
     }
     calkit_file.append(".calkit");
+    qDebug() << "Associated calibration kit expected in" << calkit_file;
     try {
-        kit = Calkit::fromFile(calkit_file.toStdString());
+        kit = Calkit::fromFile(calkit_file);
     } catch (runtime_error e) {
         QMessageBox::warning(nullptr, "Missing calibration kit", "The calibration kit file associated with the selected calibration could not be parsed. The calibration might not be accurate. (" + QString(e.what()) + ")");
+        qWarning() << "Parsing of calibration kit failed while opening calibration file: " << e.what();
     }
 
     ifstream file;
@@ -621,8 +710,10 @@ bool Calibration::openFromFile(QString filename)
         file >> *this;
     } catch(runtime_error e) {
         QMessageBox::warning(nullptr, "File parsing error", e.what());
+        qWarning() << "Calibration file parsing failed: " << e.what();
         return false;
     }
+    this->currentCalFile = filename;    // if all ok, remember this
 
     return true;
 }
@@ -630,28 +721,68 @@ bool Calibration::openFromFile(QString filename)
 bool Calibration::saveToFile(QString filename)
 {
     if(filename.isEmpty()) {
-        filename = QFileDialog::getSaveFileName(nullptr, "Save calibration data", "", "Calibration files (*.cal)", nullptr, QFileDialog::DontUseNativeDialog);
+        QString fn = descriptiveCalName();
+        filename = QFileDialog::getSaveFileName(nullptr, "Save calibration data", fn, "Calibration files (*.cal)", nullptr, QFileDialog::DontUseNativeDialog);
         if(filename.isEmpty()) {
             // aborted selection
             return false;
         }
     }
-    // strip any potential file name extension and set default
-    auto dotPos = filename.lastIndexOf('.');
-    if(dotPos >= 0) {
-        filename.truncate(dotPos);
+
+    if(filename.endsWith(".cal")) {
+        filename.chop(4);
     }
-    auto calibration_file = filename;
-    calibration_file.append(".cal");
+    auto calibration_file = filename + ".cal";
     ofstream file;
     file.open(calibration_file.toStdString());
     file << *this;
 
-    auto calkit_file = filename;
-    calkit_file.append(".calkit");
-    kit.toFile(calkit_file.toStdString());
+    auto calkit_file = filename + ".calkit";
+    qDebug() << "Saving associated calibration kit to file" << calkit_file;
+    kit.toFile(calkit_file);
+    this->currentCalFile = calibration_file;    // if all ok, remember this
 
     return true;
+}
+
+/**
+ * @brief Calibration::hzToString
+ * @param freqHz - input frequency in Hz
+ * @return descriptive name ie. "SOLT 40M-700M 1000pt"
+ */
+QString Calibration::descriptiveCalName(){
+    int precision = 3;
+    QString lo = Unit::ToString(this->minFreq, "", " kMG", precision);
+    QString hi = Unit::ToString(this->maxFreq, "", " kMG", precision);
+    // due to rounding up 123.66M and 123.99M -> we get lo="124M" and hi="124M"
+    // so let's add some precision
+    if (lo == hi) {
+        // Only in case of 123.66M and 123.69M we would need 5 digits, but that kind of narrow cal. is very unlikely.
+        precision = 4;
+        lo = Unit::ToString(this->minFreq, "", " kMG", precision);
+        hi = Unit::ToString(this->maxFreq, "", " kMG", precision);
+    }
+
+    QString tmp =
+            Calibration::TypeToString(this->getType())
+            + " "
+            + lo + "-" + hi
+            + " "
+            + QString::number(this->points.size()) + "pt";
+    return tmp;
+}
+
+double Calibration::getMinFreq(){
+    return this->minFreq;
+}
+double Calibration::getMaxFreq(){
+    return this->maxFreq;
+}
+int Calibration::getNumPoints(){
+    return this->points.size();
+}
+QString Calibration::getCurrentCalibrationFile(){
+    return this->currentCalFile;
 }
 
 ostream& operator<<(ostream &os, const Calibration &c)
@@ -676,15 +807,17 @@ istream& operator >>(istream &in, Calibration &c)
 {
     std::string line;
     while(getline(in, line)) {
+        QString qLine = QString::fromStdString(line).simplified();
         for(auto m : c.Measurements()) {
-            if(Calibration::MeasurementToString(m) == QString::fromStdString(line)) {
+            if(Calibration::MeasurementToString(m) == qLine) {
                 // this is the correct measurement
-                c.clearMeasurement(m);
+                c.measurements[m].datapoints.clear();
                 uint timestamp;
                 in >> timestamp;
                 c.measurements[m].timestamp = QDateTime::fromSecsSinceEpoch(timestamp);
                 unsigned int points;
                 in >> points;
+                qDebug() << "Found measurement" << Calibration::MeasurementToString(m) << ", containing" << points << "points";
                 for(unsigned int i=0;i<points;i++) {
                     Protocol::Datapoint p;
                     in >> p.pointNum >> p.frequency;
@@ -699,8 +832,9 @@ istream& operator >>(istream &in, Calibration &c)
             }
         }
         for(auto t : Calibration::Types()) {
-            if(Calibration::TypeToString(t) == QString::fromStdString(line)) {
+            if(Calibration::TypeToString(t) == qLine) {
                 // try to apply this calibration type
+                qDebug() << "Specified calibration in file is" << Calibration::TypeToString(t);
                 if(c.calculationPossible(t)) {
                     c.constructErrorTerms(t);
                 } else {
@@ -710,6 +844,7 @@ istream& operator >>(istream &in, Calibration &c)
             }
         }
     }
+    qDebug() << "Calibration file parsing complete";
     return in;
 }
 

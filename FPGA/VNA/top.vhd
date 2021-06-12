@@ -141,9 +141,28 @@ architecture Behavioral of top is
 		SOURCE_FILTER : OUT std_logic_vector(1 downto 0);
 		EXCITE_PORT1 : in STD_LOGIC;
 		EXCITE_PORT2 : in STD_LOGIC;
+		RESULT_INDEX : out STD_LOGIC_VECTOR (15 downto 0);
 		DEBUG_STATUS : out STD_LOGIC_VECTOR (10 downto 0)
 		);
 	END COMPONENT;
+	
+	COMPONENT Windowing
+	PORT(
+		CLK : IN std_logic;
+		RESET : IN std_logic;
+		WINDOW_TYPE : IN std_logic_vector(1 downto 0);
+		PORT1_RAW : IN std_logic_vector(15 downto 0);
+		PORT2_RAW : IN std_logic_vector(15 downto 0);
+		REF_RAW : IN std_logic_vector(15 downto 0);
+		ADC_READY : IN std_logic;
+		NSAMPLES : IN std_logic_vector(12 downto 0);          
+		PORT1_WINDOWED : OUT std_logic_vector(17 downto 0);
+		PORT2_WINDOWED : OUT std_logic_vector(17 downto 0);
+		REF_WINDOWED : OUT std_logic_vector(17 downto 0);
+		WINDOWING_DONE : OUT std_logic
+		);
+	END COMPONENT;
+	
 	COMPONENT Sampling
 	Generic(CLK_CYCLES_PRE_DONE : integer);
 	PORT(
@@ -151,13 +170,12 @@ architecture Behavioral of top is
 		RESET : IN std_logic;
 		ADC_PRESCALER : in STD_LOGIC_VECTOR(7 downto 0);
 		PHASEINC : in STD_LOGIC_VECTOR(11 downto 0);
-		PORT1 : IN std_logic_vector(15 downto 0);
-		PORT2 : IN std_logic_vector(15 downto 0);
-		REF : IN std_logic_vector(15 downto 0);
+		PORT1 : IN std_logic_vector(17 downto 0);
+		PORT2 : IN std_logic_vector(17 downto 0);
+		REF : IN std_logic_vector(17 downto 0);
 		NEW_SAMPLE : IN std_logic;
 		START : IN std_logic;
 		SAMPLES : IN std_logic_vector(12 downto 0);
-		WINDOW_TYPE : in STD_LOGIC_VECTOR (1 downto 0);		
 		ADC_START : OUT std_logic;
 		DONE : OUT std_logic;
 		PRE_DONE : OUT std_logic;
@@ -211,7 +229,7 @@ architecture Behavioral of top is
 		MOSI : IN std_logic;
 		NSS : IN std_logic;
 		NEW_SAMPLING_DATA : IN std_logic;
-		SAMPLING_RESULT : IN std_logic_vector(287 downto 0);
+		SAMPLING_RESULT : IN std_logic_vector(303 downto 0);
 		ADC_MINMAX : in STD_LOGIC_VECTOR(95 downto 0);
 		SOURCE_UNLOCKED : IN std_logic;
 		LO_UNLOCKED : IN std_logic;          
@@ -244,7 +262,30 @@ architecture Behavioral of top is
 		RESET_MINMAX : out STD_LOGIC;
 		SWEEP_HALTED : in STD_LOGIC;
 		SWEEP_RESUME : out STD_LOGIC;
+		DFT_BIN1_PHASEINC : out  STD_LOGIC_VECTOR (15 downto 0);
+		DFT_DIFFBIN_PHASEINC : out  STD_LOGIC_VECTOR (15 downto 0);
+		DFT_RESULT_READY : in  STD_LOGIC;
+		DFT_OUTPUT : in  STD_LOGIC_VECTOR (191 downto 0);
+		DFT_NEXT_OUTPUT : out  STD_LOGIC;
+		DFT_ENABLE : out STD_LOGIC;
 		DEBUG_STATUS : in STD_LOGIC_VECTOR (10 downto 0)
+		);
+	END COMPONENT;
+	
+	COMPONENT DFT
+	Generic (BINS : integer);
+	PORT(
+		CLK : IN std_logic;
+		RESET : IN std_logic;
+		PORT1 : IN std_logic_vector(17 downto 0);
+		PORT2 : IN std_logic_vector(17 downto 0);
+		NEW_SAMPLE : IN std_logic;
+		NSAMPLES : IN std_logic_vector(12 downto 0);
+		BIN1_PHASEINC : IN std_logic_vector(15 downto 0);
+		DIFFBIN_PHASEINC : IN std_logic_vector(15 downto 0);
+		NEXT_OUTPUT : IN std_logic;          
+		RESULT_READY : OUT std_logic;
+		OUTPUT : OUT std_logic_vector(191 downto 0)
 		);
 	END COMPONENT;
 	
@@ -301,13 +342,18 @@ architecture Behavioral of top is
 	signal adc_minmax : std_logic_vector(95 downto 0);
 	signal adc_reset_minmax : std_logic;
 	
+	signal port1_windowed : std_logic_vector(17 downto 0);
+	signal port2_windowed : std_logic_vector(17 downto 0);
+	signal ref_windowed : std_logic_vector(17 downto 0);
+	signal windowing_ready : std_logic;
+	
 	-- Sampling signals
 	signal sampling_busy : std_logic;
 	signal sampling_done : std_logic;
 	signal sampling_start : std_logic;
 	signal sampling_samples : std_logic_vector(12 downto 0);
 	signal sampling_user_samples : std_logic_vector(12 downto 0);
-	signal sampling_result : std_logic_vector(287 downto 0);
+	signal sampling_result : std_logic_vector(303 downto 0);
 	signal sampling_window : std_logic_vector(1 downto 0);
 	signal sampling_prescaler : std_logic_vector(7 downto 0);
 	signal sampling_phaseinc : std_logic_vector(11 downto 0);
@@ -360,9 +406,19 @@ architecture Behavioral of top is
 	signal aux3_sync : std_logic;
 	signal lo_ld_sync : std_logic;
 	signal source_ld_sync : std_logic;
+	signal nss_sync : std_logic;
 	
 	signal debug : std_logic_vector(10 downto 0);
 	signal intr : std_logic;
+	
+	-- DFT signals
+	signal dft_bin1_phaseinc : std_logic_vector (15 downto 0);
+	signal dft_diffbin_phaseinc : std_logic_vector (15 downto 0);
+	signal dft_ready : std_logic;
+	signal dft_output : std_logic_vector (191 downto 0);
+	signal dft_next_output : std_logic;
+	signal dft_enable : std_logic;
+	signal dft_reset : std_logic;
 begin
 
 	-- Reference CLK LED
@@ -448,6 +504,13 @@ begin
 		SYNC_IN => SOURCE_LD,
 		SYNC_OUT => source_ld_sync
 	);	
+	Sync_NSS : Synchronizer
+	GENERIC MAP(stages => 2)
+	PORT MAP(
+		CLK => clk160,
+		SYNC_IN => MCU_NSS,
+		SYNC_OUT => nss_sync
+	);	
 	
 
 	Source: MAX2871
@@ -532,6 +595,22 @@ begin
 		SCLK => REF_SCLK
 	);
 	
+	
+	Windower: Windowing PORT MAP(
+		CLK => clk160,
+		RESET => sampling_start,
+		WINDOW_TYPE => sampling_window,
+		PORT1_RAW => adc_port1_data,
+		PORT2_RAW => adc_port2_data,
+		REF_RAW => adc_ref_data,
+		ADC_READY => adc_port1_ready,
+		PORT1_WINDOWED => port1_windowed,
+		PORT2_WINDOWED => port2_windowed,
+		REF_WINDOWED => ref_windowed,
+		WINDOWING_DONE => windowing_ready,
+		NSAMPLES => sampling_samples
+	);
+	
 	Sampler: Sampling
 	GENERIC MAP(CLK_CYCLES_PRE_DONE => 0)
 	PORT MAP(
@@ -539,16 +618,15 @@ begin
 		RESET => sweep_reset,
 		ADC_PRESCALER => sampling_prescaler,
 		PHASEINC => sampling_phaseinc,
-		PORT1 => adc_port1_data,
-		PORT2 => adc_port2_data,
-		REF => adc_ref_data,
+		PORT1 => port1_windowed,
+		PORT2 => port2_windowed,
+		REF => ref_windowed,
 		ADC_START => adc_trigger_sample,
-		NEW_SAMPLE => adc_port1_ready,
+		NEW_SAMPLE => windowing_ready,
 		DONE => sampling_done,
 		PRE_DONE => open,
 		START => sampling_start,
 		SAMPLES => sampling_samples,
-		WINDOW_TYPE => sampling_window,
 		PORT1_I => sampling_result(287 downto 240),
 		PORT1_Q => sampling_result(239 downto 192),
 		PORT2_I => sampling_result(191 downto 144),
@@ -567,7 +645,7 @@ begin
 		CONFIG_ADDRESS => sweep_config_address,
 		CONFIG_DATA => sweep_config_data,
 		USER_NSAMPLES => sampling_user_samples,
-		NSAMPLES => sampling_user_samples,
+		NSAMPLES => sampling_samples,
 		SAMPLING_BUSY => sampling_busy,
 		SAMPLING_DONE => sampling_done,
 		START_SAMPLING => sampling_start,
@@ -594,7 +672,8 @@ begin
 		SOURCE_FILTER => source_filter,
 		EXCITE_PORT1 => sweep_excite_port1,
 		EXCITE_PORT2 => sweep_excite_port2,
-		DEBUG_STATUS => debug
+		DEBUG_STATUS => debug,
+		RESULT_INDEX => sampling_result(303 downto 288)
 	);
 	
 	-- Source filter mapping
@@ -605,7 +684,7 @@ begin
 	
 	-- PLL/SPI mux
 	-- only select FPGA SPI slave when both AUX1 and AUX2 are low
-	fpga_select <= MCU_NSS when aux1_sync = '0' and aux2_sync = '0' else '1';
+	fpga_select <= nss_sync when aux1_sync = '0' and aux2_sync = '0' else '1';
 	-- direct connection between MCU and SOURCE when AUX1 is high
 	SOURCE_CLK <= MCU_SCK when aux1_sync = '1' else fpga_source_SCK;
 	SOURCE_MOSI <= MCU_MOSI when aux1_sync = '1' else fpga_source_MOSI;
@@ -643,7 +722,7 @@ begin
 		SWEEP_ADDRESS => sweep_config_write_address,
 		SWEEP_WRITE => sweep_config_write,
 		SWEEP_POINTS => sweep_points,
-		NSAMPLES => sampling_samples,
+		NSAMPLES => sampling_user_samples,
 		PORT1_EN => port1mix_en,
 		PORT2_EN => port2mix_en,
 		REF_EN => refmix_en,
@@ -663,7 +742,30 @@ begin
 		SWEEP_RESUME => sweep_resume,
 		EXCITE_PORT1 => sweep_excite_port1,
 		EXCITE_PORT2 => sweep_excite_port2,
+		DFT_BIN1_PHASEINC => dft_bin1_phaseinc,
+		DFT_DIFFBIN_PHASEINC => dft_diffbin_phaseinc,
+		DFT_RESULT_READY => dft_ready,
+		DFT_OUTPUT => dft_output,
+		DFT_NEXT_OUTPUT => dft_next_output,
+		DFT_ENABLE => dft_enable,
 		DEBUG_STATUS => debug
+	);
+	
+	dft_reset <= not dft_enable;
+	
+	SA_DFT: DFT GENERIC MAP(BINS => 96)
+	PORT MAP(
+		CLK => clk160,
+		RESET => dft_reset,
+		PORT1 => port1_windowed,
+		PORT2 => port2_windowed,
+		NEW_SAMPLE => windowing_ready,
+		NSAMPLES => sampling_samples,
+		BIN1_PHASEINC => dft_bin1_phaseinc,
+		DIFFBIN_PHASEINC => dft_diffbin_phaseinc,
+		RESULT_READY => dft_ready,
+		OUTPUT => dft_output,
+		NEXT_OUTPUT => dft_next_output
 	);
 	
 	ConfigMem : SweepConfigMem

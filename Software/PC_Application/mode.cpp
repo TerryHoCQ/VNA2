@@ -3,20 +3,23 @@
 #include <QPushButton>
 #include <QSettings>
 #include "ui_main.h"
+#include <QDebug>
+#include <QFileDialog>
 
 Mode* Mode::activeMode = nullptr;
 QWidget* Mode::cornerWidget = nullptr;
 QButtonGroup* Mode::modeButtonGroup = nullptr;
 
 Mode::Mode(AppWindow *window, QString name)
-    : window(window),
+    : QObject(window),
+      window(window),
       name(name),
       central(nullptr)
 {
     // Create mode switch button
     auto modeSwitch = new QPushButton(name);
     modeSwitch->setCheckable(true);
-    modeSwitch->setMaximumHeight(window->getUi()->menubar->height());
+    modeSwitch->setMaximumHeight(window->menuBar()->height());
     if(!cornerWidget) {
         // this is the first created mode, initialize corner widget and set this mode as active
         modeSwitch->setChecked(true);
@@ -27,7 +30,7 @@ Mode::Mode(AppWindow *window, QString name)
         cornerWidget->layout()->setContentsMargins(0,0,0,0);
         window->menuBar()->setCornerWidget(cornerWidget);
         modeButtonGroup = new QButtonGroup;
-        window->getUi()->menubar->setMaximumHeight(window->getUi()->menubar->height());
+//        window->menuBar()->setMaximumHeight(window->menuBar()->height());
     }
     cornerWidget->layout()->addWidget(modeSwitch);
     modeButtonGroup->addButton(modeSwitch);
@@ -46,6 +49,7 @@ void Mode::activate()
         activeMode->deactivate();
     }
 
+    qDebug() << "Activating mode" << name;
     // show all mode specific GUI elements
     for(auto t : toolbars) {
         t->show();
@@ -63,13 +67,10 @@ void Mode::activate()
     window->getCentral()->setCurrentWidget(central);
 
     // restore dock and toolbar positions
-//    window->restoreGeometry(settings.value("geometry_"+name).toByteArray());
     window->restoreState(settings.value("windowState_"+name).toByteArray());
 
     // restore visibility of toolbars and docks
-//    window->getUi()->menuDocks->clear();
     for(auto d : docks) {
-//        window->getUi()->menuDocks->addAction(d->toggleViewAction());
         bool hidden = settings.value("dock_"+name+"_"+d->windowTitle(), d->isHidden()).toBool();
         if(hidden) {
             d->hide();
@@ -77,9 +78,7 @@ void Mode::activate()
             d->show();
         }
     }
-//    window->getUi()->menuToolbars->clear();
     for(auto t : toolbars) {
-//        window->getUi()->menuToolbars->addAction(t->toggleViewAction());
         bool hidden = settings.value("toolbar_"+name+"_"+t->windowTitle(), t->isHidden()).toBool();
         if(hidden) {
             t->hide();
@@ -105,7 +104,6 @@ void Mode::deactivate()
     for(auto t : toolbars) {
         settings.setValue("toolbar_"+name+"_"+t->windowTitle(), t->isHidden());
     }
-//    settings.setValue("geometry_"+name, window->saveGeometry());
     settings.setValue("windowState_"+name, window->saveState());
 
     // hide all mode specific GUI elements
@@ -121,12 +119,27 @@ void Mode::deactivate()
         a->setVisible(false);
     }
 
+    qDebug() << "Deactivated mode" << name;
     activeMode = nullptr;
 }
 
 Mode *Mode::getActiveMode()
 {
     return activeMode;
+}
+
+void Mode::saveSreenshot()
+{
+    auto filename = QFileDialog::getSaveFileName(nullptr, "Save plot image", "", "PNG image files (*.png)", nullptr, QFileDialog::DontUseNativeDialog);
+    if(filename.isEmpty()) {
+        // aborted selection
+        return;
+    }
+    if(filename.endsWith(".png")) {
+        filename.chop(4);
+    }
+    filename += ".png";
+    central->grab().save(filename);
 }
 
 void Mode::finalize(QWidget *centralWidget)

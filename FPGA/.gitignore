@@ -4,8 +4,9 @@
 !*.vhd
 !*.ucf
 !*.ipf
-*/ipcore_dir
 !*.gise
 !*.xise
 !*.py
 !*.bin
+!VNA/*.dat
+

@@ -6,8 +6,13 @@
 #include "appwindow.h"
 #include "mode.h"
 #include "CustomWidgets/tilewidget.h"
+#include "Device/device.h"
+#include <functional>
+#include "Deembedding/deembedding.h"
+#include "scpi.h"
+#include "Traces/tracewidget.h"
 
-class VNA : public Mode
+class VNA : public Mode, public SCPINode
 {
     Q_OBJECT
 public:
@@ -16,6 +21,11 @@ public:
     void deactivate() override;
     void initializeDevice() override;
     void deviceDisconnected() override;
+    void shutdown() override;
+
+    // Only save/load user changeable stuff, no need to save the widgets/mode name etc.
+    virtual nlohmann::json toJSON() override;
+    virtual void fromJSON(nlohmann::json j) override;
 private slots:
     void NewDatapoint(Protocol::Datapoint d);
     void StartImpedanceMatching();
@@ -42,31 +52,49 @@ signals:
     void CalibrationMeasurementComplete(Calibration::Measurement m);
 
 private:
+    bool CalibrationMeasurementActive() { return calWaitFirst || calMeasuring; }
+    void SetupSCPI();
     void UpdateAverageCount();
-    void SettingsChanged();
+    void SettingsChanged(std::function<void (Device::TransmissionResult)> cb = nullptr);
     void ConstrainAndUpdateFrequencies();
     void LoadSweepSettings();
     void StoreSweepSettings();
-
+    void StopSweep();
+    void StartCalibrationDialog(Calibration::Type type = Calibration::Type::None);
+    void UpdateCalWidget();
+private slots:
+    void EnableDeembedding(bool enable);
+private:
     Protocol::SweepSettings settings;
     unsigned int averages;
     TraceModel traceModel;
+    TraceWidget *traceWidget;
     TraceMarkerModel *markerModel;
     Averaging average;
 
     // Calibration
     Calibration cal;
     bool calValid;
+    bool calEdited;
     Calibration::Measurement calMeasurement;
     bool calMeasuring;
     bool calWaitFirst;
     QProgressDialog calDialog;
+    QString getCalStyle();
+    QString getCalToolTip();
+
 
     QMenu *defaultCalMenu;
     QAction *assignDefaultCal, *removeDefaultCal;
+    QAction *saveCal;
+
+    Deembedding deembedding;
+    QAction *enableDeembeddingAction;
+    bool deembedding_active;
 
     // Status Labels
     QLabel *lAverages;
+    QLabel *calLabel;
 
     TileWidget *central;
 

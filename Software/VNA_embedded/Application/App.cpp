@@ -1,3 +1,4 @@
+#include <Cal.hpp>
 #include <VNA.hpp>
 #include "App.h"
 
@@ -17,39 +18,26 @@
 #include "Manual.hpp"
 #include "Generator.hpp"
 #include "SpectrumAnalyzer.hpp"
+#include "HW_HAL.hpp"
 
 #define LOG_LEVEL	LOG_LEVEL_INFO
 #define LOG_MODULE	"App"
 #include "Log.h"
 
-static Protocol::Datapoint result;
-static Protocol::SweepSettings settings;
-
-static Protocol::PacketInfo recv_packet, transmit_packet;
+static Protocol::PacketInfo recv_packet;
+static Protocol::PacketInfo last_measure_packet; // contains the command that started the last measured (replay in case of timeout)
 static TaskHandle_t handle;
 
 #if HW_REVISION >= 'B'
 // has MCU controllable flash chip, firmware update supported
 #define HAS_FLASH
 #include "Firmware.hpp"
-extern SPI_HandleTypeDef hspi1;
-static Flash flash = Flash(&hspi1, FLASH_CS_GPIO_Port, FLASH_CS_Pin);
 #endif
 
 extern ADC_HandleTypeDef hadc1;
 
 #define FLAG_USB_PACKET		0x01
-#define FLAG_DATAPOINT		0x02
 
-static void VNACallback(const Protocol::Datapoint &res) {
-	DEBUG2_HIGH();
-	transmit_packet.type = Protocol::PacketType::Datapoint;
-	transmit_packet.datapoint = res;
-	BaseType_t woken = false;
-	xTaskNotifyFromISR(handle, FLAG_DATAPOINT, eSetBits, &woken);
-	portYIELD_FROM_ISR(woken);
-	DEBUG2_LOW();
-}
 static void USBPacketReceived(const Protocol::PacketInfo &p) {
 	recv_packet = p;
 	BaseType_t woken = false;
@@ -71,17 +59,17 @@ void App_Start() {
 	LOG_INFO("Start");
 	Exti::Init();
 #ifdef HAS_FLASH
-	if(!flash.isPresent()) {
+	if(!HWHAL::flash.isPresent()) {
 		LOG_CRIT("Failed to detect onboard FLASH");
 		LED::Error(1);
 	}
-	auto fw_info = Firmware::GetFlashContentInfo(&flash);
+	auto fw_info = Firmware::GetFlashContentInfo();
 	if(fw_info.valid) {
 		if(fw_info.CPU_need_update) {
 			// Function will not return, the device will reboot with the new firmware instead
 //			Firmware::PerformUpdate(&flash, fw_info);
 		}
-		if(!FPGA::Configure(&flash, fw_info.FPGA_bitstream_address, fw_info.FPGA_bitstream_size)) {
+		if(!FPGA::Configure(fw_info.FPGA_bitstream_address, fw_info.FPGA_bitstream_size)) {
 			LOG_CRIT("FPGA configuration failed");
 			LED::Error(3);
 		}
@@ -98,6 +86,8 @@ void App_Start() {
 	EN_6V_GPIO_Port->BSRR = EN_6V_Pin;
 #endif
 
+	Cal::Load();
+
 	if (!HW::Init()) {
 		LOG_CRIT("Initialization failed, unable to start");
 		LED::Error(4);
@@ -108,7 +98,6 @@ void App_Start() {
 	USB_EN_GPIO_Port->BSRR = USB_EN_Pin;
 #endif
 
-	uint32_t lastNewPoint = HAL_GetTick();
 	bool sweepActive = false;
 
 	LED::Off();
@@ -116,21 +105,17 @@ void App_Start() {
 		uint32_t notification;
 		if(xTaskNotifyWait(0x00, UINT32_MAX, &notification, 100) == pdPASS) {
 			// something happened
-			if(notification & FLAG_DATAPOINT) {
-				Communication::Send(transmit_packet);
-				lastNewPoint = HAL_GetTick();
-			}
 			if(notification & FLAG_USB_PACKET) {
 				switch(recv_packet.type) {
 				case Protocol::PacketType::SweepSettings:
 					LOG_INFO("New settings received");
-					settings = recv_packet.settings;
-					sweepActive = VNA::Setup(settings, VNACallback);
-					lastNewPoint = HAL_GetTick();
+					last_measure_packet = recv_packet;
+					sweepActive = VNA::Setup(recv_packet.settings);
 					Communication::SendWithoutPayload(Protocol::PacketType::Ack);
 					break;
 				case Protocol::PacketType::ManualControl:
 					sweepActive = false;
+					last_measure_packet = recv_packet;
 					Manual::Setup(recv_packet.manual);
 					Communication::SendWithoutPayload(Protocol::PacketType::Ack);
 					break;
@@ -143,29 +128,37 @@ void App_Start() {
 					Communication::SendWithoutPayload(Protocol::PacketType::Ack);
 					break;
 				case Protocol::PacketType::Generator:
-					sweepActive = false;
+					sweepActive = true;
+					last_measure_packet = recv_packet;
 					LOG_INFO("Updating generator setting");
 					Generator::Setup(recv_packet.generator);
 					Communication::SendWithoutPayload(Protocol::PacketType::Ack);
 					break;
 				case Protocol::PacketType::SpectrumAnalyzerSettings:
-					sweepActive = false;
+					sweepActive = true;
+					last_measure_packet = recv_packet;
 					LOG_INFO("Updating spectrum analyzer settings");
 					SA::Setup(recv_packet.spectrumSettings);
 					Communication::SendWithoutPayload(Protocol::PacketType::Ack);
 					break;
-				case Protocol::PacketType::RequestDeviceLimits:
+				case Protocol::PacketType::RequestDeviceInfo:
+					Communication::SendWithoutPayload(Protocol::PacketType::Ack);
 					Protocol::PacketInfo p;
-					p.type = Protocol::PacketType::DeviceLimits;
-					p.limits = HW::Limits;
+					p.type = Protocol::PacketType::DeviceInfo;
+					HW::fillDeviceInfo(&p.info);
 					Communication::Send(p);
+					break;
+				case Protocol::PacketType::SetIdle:
+					HW::SetMode(HW::Mode::Idle);
+					sweepActive = false;
+					Communication::SendWithoutPayload(Protocol::PacketType::Ack);
 					break;
 #ifdef HAS_FLASH
 				case Protocol::PacketType::ClearFlash:
 					HW::SetMode(HW::Mode::Idle);
 					sweepActive = false;
 					LOG_DEBUG("Erasing FLASH in preparation for firmware update...");
-					if(flash.eraseChip()) {
+					if(HWHAL::flash.eraseRange(0, Firmware::maxSize)) {
 						LOG_DEBUG("...FLASH erased")
 						Communication::SendWithoutPayload(Protocol::PacketType::Ack);
 					} else {
@@ -175,7 +168,7 @@ void App_Start() {
 					break;
 				case Protocol::PacketType::FirmwarePacket:
 					LOG_INFO("Writing firmware packet at address %u", recv_packet.firmware.address);
-					if(flash.write(recv_packet.firmware.address, sizeof(recv_packet.firmware.data), recv_packet.firmware.data)) {
+					if(HWHAL::flash.write(recv_packet.firmware.address, sizeof(recv_packet.firmware.data), recv_packet.firmware.data)) {
 						Communication::SendWithoutPayload(Protocol::PacketType::Ack);
 					} else {
 						LOG_ERR("Failed to write FLASH");
@@ -184,18 +177,47 @@ void App_Start() {
 					break;
 				case Protocol::PacketType::PerformFirmwareUpdate: {
 					LOG_INFO("Firmware update process triggered");
-					auto fw_info = Firmware::GetFlashContentInfo(&flash);
+					auto fw_info = Firmware::GetFlashContentInfo();
 					if(fw_info.valid) {
 						Communication::SendWithoutPayload(Protocol::PacketType::Ack);
 						// Some delay to allow communication to finish
 						vTaskDelay(100);
-						Firmware::PerformUpdate(&flash, fw_info);
+						Firmware::PerformUpdate(fw_info);
 						// should never get here
 						Communication::SendWithoutPayload(Protocol::PacketType::Nack);
 					}
 				}
 					break;
 #endif
+				case Protocol::PacketType::RequestSourceCal:
+					Communication::SendWithoutPayload(Protocol::PacketType::Ack);
+					Cal::SendSource();
+					break;
+				case Protocol::PacketType::RequestReceiverCal:
+					Communication::SendWithoutPayload(Protocol::PacketType::Ack);
+					Cal::SendReceiver();
+					break;
+				case Protocol::PacketType::SourceCalPoint:
+					Cal::AddSourcePoint(recv_packet.amplitudePoint);
+					Communication::SendWithoutPayload(Protocol::PacketType::Ack);
+					break;
+				case Protocol::PacketType::ReceiverCalPoint:
+					Cal::AddReceiverPoint(recv_packet.amplitudePoint);
+					Communication::SendWithoutPayload(Protocol::PacketType::Ack);
+					break;
+				case Protocol::PacketType::RequestFrequencyCorrection:
+					Communication::SendWithoutPayload(Protocol::PacketType::Ack);
+					{
+						Protocol::PacketInfo send;
+						send.type = Protocol::PacketType::FrequencyCorrection;
+						send.frequencyCorrection.ppm = Cal::getFrequencyCal();
+						Communication::Send(send);
+					}
+					break;
+				case Protocol::PacketType::FrequencyCorrection:
+					Cal::setFrequencyCal(recv_packet.frequencyCorrection.ppm);
+					Communication::SendWithoutPayload(Protocol::PacketType::Ack);
+					break;
 				default:
 					// this packet type is not supported
 					Communication::SendWithoutPayload(Protocol::PacketType::Nack);
@@ -203,16 +225,10 @@ void App_Start() {
 				}
 			}
 		}
-
-		if(sweepActive && HAL_GetTick() - lastNewPoint > 1000) {
-			LOG_WARN("Timed out waiting for point, last received point was %d (Status 0x%04x)", result.pointNum, FPGA::GetStatus());
-			FPGA::AbortSweep();
-			// restart the current sweep
-			HW::Init();
-			HW::Ref::update();
-			VNA::Setup(settings, VNACallback);
-			sweepActive = true;
-			lastNewPoint = HAL_GetTick();
+		if(HW::TimedOut()) {
+			HW::SetMode(HW::Mode::Idle);
+			// insert the last received packet (restarts the timed out operation)
+			USBPacketReceived(last_measure_packet);
 		}
 	}
 }

@@ -33,20 +33,29 @@ entity DFT is
 	Generic (BINS : integer);
     Port ( CLK : in  STD_LOGIC;
            RESET : in  STD_LOGIC;
-           PORT1 : in  STD_LOGIC_VECTOR (15 downto 0);
-           PORT2 : in  STD_LOGIC_VECTOR (15 downto 0);
+           PORT1 : in  STD_LOGIC_VECTOR (17 downto 0);
+           PORT2 : in  STD_LOGIC_VECTOR (17 downto 0);
            NEW_SAMPLE : in  STD_LOGIC;
-			  NSAMPLES : in STD_LOGIC_VECTOR (15 downto 0);
+			  NSAMPLES : in STD_LOGIC_VECTOR (12 downto 0);
            BIN1_PHASEINC : in  STD_LOGIC_VECTOR (15 downto 0);
            DIFFBIN_PHASEINC : in  STD_LOGIC_VECTOR (15 downto 0);
-			  WINDOW_INC : in STD_LOGIC_VECTOR (15 downto 0);
-			  WINDOW_TYPE : in STD_LOGIC_VECTOR (1 downto 0);
            RESULT_READY : out  STD_LOGIC;
            OUTPUT : out  STD_LOGIC_VECTOR (191 downto 0);
            NEXT_OUTPUT : in  STD_LOGIC);
 end DFT;
 
 architecture Behavioral of DFT is
+COMPONENT result_bram
+  PORT (
+    clka : IN STD_LOGIC;
+    wea : IN STD_LOGIC_VECTOR(0 DOWNTO 0);
+    addra : IN STD_LOGIC_VECTOR(7 DOWNTO 0);
+    dina : IN STD_LOGIC_VECTOR(191 DOWNTO 0);
+    clkb : IN STD_LOGIC;
+    addrb : IN STD_LOGIC_VECTOR(7 DOWNTO 0);
+    doutb : OUT STD_LOGIC_VECTOR(191 DOWNTO 0)
+  );
+END COMPONENT;
 COMPONENT SinCos
   PORT (
     clk : IN STD_LOGIC;
@@ -55,12 +64,15 @@ COMPONENT SinCos
     sine : OUT STD_LOGIC_VECTOR(15 DOWNTO 0)
   );
 END COMPONENT;
-COMPONENT SinCosMult
+COMPONENT DSP_SLICE
   PORT (
     clk : IN STD_LOGIC;
-    a : IN STD_LOGIC_VECTOR(15 DOWNTO 0);
-    b : IN STD_LOGIC_VECTOR(15 DOWNTO 0);
-    p : OUT STD_LOGIC_VECTOR(31 DOWNTO 0)
+    ce : IN STD_LOGIC;
+    sel : IN STD_LOGIC_VECTOR(0 DOWNTO 0);
+    a : IN STD_LOGIC_VECTOR(17 DOWNTO 0);
+    b : IN STD_LOGIC_VECTOR(17 DOWNTO 0);
+    c : IN STD_LOGIC_VECTOR(47 DOWNTO 0);
+    p : OUT STD_LOGIC_VECTOR(47 DOWNTO 0)
   );
 END COMPONENT;
 COMPONENT window
@@ -72,43 +84,61 @@ PORT(
 	);
 END COMPONENT;
 
-	type result is array(BINS-1 downto 0) of std_logic_vector(47 downto 0);
-	signal port1_real : result;
-	signal port1_imag : result;
-	signal port2_real : result;
-	signal port2_imag : result;
-	signal sample_cnt : integer range 0 to 65535;
-	signal bin_cnt : integer range 0 to BINS+2;
-	signal output_cnt : integer range 0 to BINS-1;
-	type States is (WaitingForSample, WindowingStart, WaitMult, WaitMult2, PhaseReady, WindowingReady, WaitSinCos, Busy, Ready);
-	signal state : States;
-	signal port1_latch : std_logic_vector(15 downto 0);
-	signal port2_latch : std_logic_vector(15 downto 0);
+	--type result is array(BINS-1 downto 0) of std_logic_vector(47 downto 0);
+	--signal port1_real : result;
+	--signal port1_imag : result;
+	--signal port2_real : result;
+	--signal port2_imag : result;
 	
-	signal window_index : std_logic_vector(6 downto 0);
-
-	signal window_value : std_logic_vector(15 downto 0);
+	--signal port1_real_read : std_logic_vector(47 downto 0);
+	--signal port1_imag_read : std_logic_vector(47 downto 0);
+	--signal port2_real_read : std_logic_vector(47 downto 0);
+	--signal port2_imag_read : std_logic_vector(47 downto 0);
+	
+	signal sample_cnt : integer range 0 to 131072;
+	signal samples_to_take : integer range 0 to 131072;
+	signal bin_cnt : integer range 0 to BINS+2;
+	
+	signal read_address : integer range 0 to BINS-1;
+	signal write_address : integer range 0 to BINS-1;
+	signal read_address_vector : std_logic_vector(7 downto 0);
+	signal write_address_vector : std_logic_vector(7 downto 0);
+	signal we : std_logic_vector(0 downto 0);
+	signal ram_in : std_logic_vector(191 downto 0);
+	signal ram_out : std_logic_vector(191 downto 0);
+	
+	type States is (WaitingForSample, WaitMult, WaitSinCos, Busy, Ready);
+	signal state : States;
+	signal port1_latch : std_logic_vector(17 downto 0);
+	signal port2_latch : std_logic_vector(17 downto 0);
 	
 	signal phase : std_logic_vector(31 downto 0);
 	signal phase_inc : std_logic_vector(31 downto 0);
 	signal sine : std_logic_vector(15 downto 0);
 	signal cosine : std_logic_vector(15 downto 0);
 	
-	signal mult1_a : std_logic_vector(15 downto 0);
-	signal mult1_b : std_logic_vector(15 downto 0);
-	signal mult1_p : std_logic_vector(31 downto 0);
+	signal mult1_a : std_logic_vector(17 downto 0);
+	signal mult1_b : std_logic_vector(17 downto 0);
+	signal mult1_c : std_logic_vector(47 downto 0);
+	signal mult1_p : std_logic_vector(47 downto 0);
 	
-	signal mult2_a : std_logic_vector(15 downto 0);
-	signal mult2_b : std_logic_vector(15 downto 0);
-	signal mult2_p : std_logic_vector(31 downto 0);
+	signal mult2_a : std_logic_vector(17 downto 0);
+	signal mult2_b : std_logic_vector(17 downto 0);
+	signal mult2_c : std_logic_vector(47 downto 0);
+	signal mult2_p : std_logic_vector(47 downto 0);
 	
-	signal mult3_a : std_logic_vector(15 downto 0);
-	signal mult3_b : std_logic_vector(15 downto 0);
-	signal mult3_p : std_logic_vector(31 downto 0);
+	signal mult3_a : std_logic_vector(17 downto 0);
+	signal mult3_b : std_logic_vector(17 downto 0);
+	signal mult3_c : std_logic_vector(47 downto 0);
+	signal mult3_p : std_logic_vector(47 downto 0);
 	
-	signal mult4_a : std_logic_vector(15 downto 0);
-	signal mult4_b : std_logic_vector(15 downto 0);
-	signal mult4_p : std_logic_vector(31 downto 0);
+	signal mult4_a : std_logic_vector(17 downto 0);
+	signal mult4_b : std_logic_vector(17 downto 0);
+	signal mult4_c : std_logic_vector(47 downto 0);
+	signal mult4_p : std_logic_vector(47 downto 0);
+	
+	signal mult_enable : std_logic;
+	signal mult_accumulate : std_logic_vector(0 downto 0);
 begin
 
 	LookupTable : SinCos
@@ -118,138 +148,205 @@ begin
 		cosine => cosine,
 		sine => sine
 	);
-	Mult1 : SinCosMult
+	Mult1 : DSP_SLICE
 	PORT MAP (
 		clk => CLK,
+		ce => mult_enable,
+		sel => mult_accumulate,
 		a => mult1_a,
 		b => mult1_b,
+		c => mult1_c,
 		p => mult1_p
 	);
-	Mult2 : SinCosMult
+	Mult2 : DSP_SLICE
 	PORT MAP (
 		clk => CLK,
+		ce => mult_enable,
+		sel => mult_accumulate,
 		a => mult2_a,
 		b => mult2_b,
+		c => mult2_c,
 		p => mult2_p
 	);
-	Mult3 : SinCosMult
+	Mult3 : DSP_SLICE
 	PORT MAP (
 		clk => CLK,
+		ce => mult_enable,
+		sel => mult_accumulate,
 		a => mult3_a,
 		b => mult3_b,
+		c => mult3_c,
 		p => mult3_p
 	);
-	Mult4 : SinCosMult
+	Mult4 : DSP_SLICE
 	PORT MAP (
 		clk => CLK,
+		ce => mult_enable,
+		sel => mult_accumulate,
 		a => mult4_a,
 		b => mult4_b,
+		c => mult4_c,
 		p => mult4_p
 	);
-	WindowROM: window PORT MAP(
-		CLK => CLK,
-		INDEX => window_index(15 downto 9),
-		WINDOW_TYPE => WINDOW_TYPE,
-		VALUE => window_value
+	
+	result_ram: result_bram
+	PORT MAP (
+		clka => CLK,
+		wea => we,
+		addra => write_address_vector,
+		dina => ram_in,
+		clkb => CLK,
+		addrb => read_address_vector,
+		doutb => ram_out
 	);
-
+	
+	read_address_vector <= std_logic_vector(to_unsigned(read_address, 8));
+	write_address_vector <= std_logic_vector(to_unsigned(write_address, 8));
+	OUTPUT <= ram_out;
+	
+	mult1_c <= ram_out(191 downto 144);
+	mult2_c <= ram_out(143 downto 96);
+	mult3_c <= ram_out(95 downto 48);
+	mult4_c <= ram_out(47 downto 0);
+	
+	ram_in <= mult1_p & mult2_p & mult3_p & mult4_p;
+	
 	process(CLK, RESET)
 	begin
 		if rising_edge(CLK) then
 			if RESET = '1' then
-				window_index <= (others => '0');
+				mult_enable <= '0';
+				mult_accumulate <= "0";
 				sample_cnt <= 0;
-				RESULT_READY <= '1';
+				RESULT_READY <= '0';
+				read_address <= 0;
+				write_address <= 0;
+				we <= "0";
 				state <= WaitingForSample;
 			else
+				samples_to_take <= to_integer(unsigned(NSAMPLES & "0000")) - 1;
 				case state is
 					when WaitingForSample =>
-						RESULT_READY <= '1';
-						OUTPUT <= port1_real(output_cnt) & port1_imag(output_cnt) & port2_real(output_cnt) & port2_imag(output_cnt);
-						if NEXT_OUTPUT = '1' then
-							if output_cnt < BINS - 1 then
-								output_cnt <= output_cnt + 1;
-							else
-								output_cnt <= 0;
-							end if;
-						end if;
+						we <= "0";
+						mult_enable <= '0';
+						mult_accumulate <= "0";
+						read_address <= 0;
+						write_address <= 0;
 						if NEW_SAMPLE = '1' then
 							-- calculate phase for initial bin
-							mult1_a <= std_logic_vector(to_unsigned(sample_cnt, 16));
-							mult1_b <= BIN1_PHASEINC;
-							mult2_a <= std_logic_vector(to_unsigned(sample_cnt, 16));
-							mult2_b <= DIFFBIN_PHASEINC;
-							-- window ADC data
-							mult3_a <= PORT1;
-							mult3_b <= window_value;
-							mult4_a <= PORT2;
-							mult4_b <= window_value;
+							mult1_a <= std_logic_vector(to_unsigned(sample_cnt, 18));
+							mult1_b <= "00" & BIN1_PHASEINC;
+							mult2_a <= std_logic_vector(to_unsigned(sample_cnt, 18));
+							mult2_b <= "00" & DIFFBIN_PHASEINC;
 							state <= WaitMult;
+							bin_cnt <= 0;
+							mult_enable <= '1';
 						end if;
 					when WaitMult =>
 						RESULT_READY <= '0';
-						state <= WaitMult2;
-					when WaitMult2 =>
-						RESULT_READY <= '0';
-						state <= PhaseReady;							
-					when PhaseReady =>
-						RESULT_READY <= '0';
-						-- initial phase is ready
-						phase <= mult1_p;
-						phase_inc <= mult2_p;
-						state <= WindowingReady;
-					when WindowingReady =>
-						RESULT_READY <= '0';
-						phase <= std_logic_vector(unsigned(phase)+unsigned(phase_inc));
-						port1_latch <= mult3_p(31 downto 16);
-						port2_latch <= mult4_p(31 downto 16);
-						bin_cnt <= 0;
-						state <= WaitSinCos;
-					when WaitSinCos =>
-						phase <= std_logic_vector(unsigned(phase)+unsigned(phase_inc));
-						RESULT_READY <= '0';
+						we <= "0";
+						mult_enable <= '1';
+						mult_accumulate <= "0";
+						read_address <= 0;
+						write_address <= 0;
 						if bin_cnt < 4 then
 							bin_cnt <= bin_cnt + 1;
 						else
 							bin_cnt <= 0;
-							state <= BUSY;
+							mult_enable <= '0';
+							state <= WaitSinCos;
+							phase <= mult1_p(15 downto 0) & "0000000000000000";
+							phase_inc <= mult2_p(23 downto 0) & "00000000";
+							port1_latch <= PORT1;
+							port2_latch <= PORT2;
 						end if;
-					when BUSY =>
+					when WaitSinCos =>
 						phase <= std_logic_vector(unsigned(phase)+unsigned(phase_inc));
-						mult1_a <= port1_latch;
-						mult1_b <= sine;
-						mult2_a <= port1_latch;
-						mult2_b <= cosine;
-						mult3_a <= port2_latch;
-						mult3_b <= sine;
-						mult4_a <= port2_latch;
-						mult4_b <= cosine;
-						if bin_cnt >= 3 then
-							-- multiplier result is available, accumulate
+						RESULT_READY <= '0';
+						we <= "0";
+						mult_enable <= '0';
+						mult_accumulate <= "0";
+						read_address <= 0;
+						write_address <= 0;
+						if bin_cnt < 6 then
+							bin_cnt <= bin_cnt + 1;
+						else
+							bin_cnt <= 0;
+							mult_enable <= '1';
+							read_address <= 1;
+							-- sign extended multiplication
+							mult1_a <= port1_latch;
+							mult1_b <= sine(15) & sine(15) & sine;
+							mult2_a <= port1_latch;
+							mult2_b <= cosine(15) & cosine(15) & cosine;
+							mult3_a <= port2_latch;
+							mult3_b <= sine(15) & sine(15) & sine;
+							mult4_a <= port2_latch;
+							mult4_b <= cosine(15) & cosine(15) & cosine;
+							state <= BUSY;
 							if sample_cnt = 0 then
-								port1_real(bin_cnt-3) <= mult1_p;
-								port1_imag(bin_cnt-3) <= mult2_p;
-								port2_real(bin_cnt-3) <= mult3_p;
-								port2_imag(bin_cnt-3) <= mult4_p;
+								mult_accumulate <= "0";
 							else
-								port1_real(bin_cnt-3) <= std_logic_vector(unsigned(port1_real(bin_cnt-3))+unsigned(mult1_p));
-								port1_imag(bin_cnt-3) <= std_logic_vector(unsigned(port1_imag(bin_cnt-3))+unsigned(mult2_p));
-								port2_real(bin_cnt-3) <= std_logic_vector(unsigned(port2_real(bin_cnt-3))+unsigned(mult3_p));
-								--port2_imag(bin_cnt-3) <= std_logic_vector(unsigned(port2_imag(bin_cnt-3))+unsigned(mult4_p));
+								mult_accumulate <= "1";
 							end if;
 						end if;
-						if bin_cnt >= BINS+2 then
-							state <= WaitingForSample;
-							RESULT_READY <= '1';
-							sample_cnt <= sample_cnt + 1;
-							window_index <= std_logic_vector(unsigned(window_index)+unsigned(WINDOW_INC));
-							output_cnt <= 0;
+					when BUSY =>
+						mult_enable <= '1';
+						if sample_cnt = 0 then
+							mult_accumulate <= "0";
 						else
-							RESULT_READY <= '0';
+							mult_accumulate <= "1";
+						end if;
+						RESULT_READY <= '0';
+						phase <= std_logic_vector(unsigned(phase)+unsigned(phase_inc));
+						-- sign extended multiplication
+						mult1_a <= port1_latch;
+						mult1_b <= sine(15) & sine(15) & sine;
+						mult2_a <= port1_latch;
+						mult2_b <= cosine(15) & cosine(15) & cosine;
+						mult3_a <= port2_latch;
+						mult3_b <= sine(15) & sine(15) & sine;
+						mult4_a <= port2_latch;
+						mult4_b <= cosine(15) & cosine(15) & cosine;
+						if bin_cnt >= 3 then
+							-- multiplier result is available, advance write address
+							we <= "1";
+							write_address <= bin_cnt - 3;
+						else
+							we <= "0";
+							write_address <= 0;
+						end if;
+						if bin_cnt >= BINS+2 then
+							read_address <= 0;
+							if sample_cnt < samples_to_take then
+								sample_cnt <= sample_cnt + 1;
+								state <= WaitingForSample;
+							else
+								state <= Ready;
+							end if;
+						else
 							bin_cnt <= bin_cnt + 1;
+							if bin_cnt < BINS - 2 then
+								read_address <= bin_cnt + 2;
+							end if;
+						end if;
+					when Ready =>
+						we <= "0";
+						RESULT_READY <= '1';
+						write_address <= 0;
+						if NEXT_OUTPUT = '1' then
+							-- fetch next entry from RAM
+							if read_address < BINS - 1 then
+								read_address <= read_address + 1;
+							else
+								RESULT_READY <= '0';
+								sample_cnt <= 0;
+								mult_enable <= '0';
+								state <= WaitingForSample;
+								read_address <= 0;
+							end if;
 						end if;
 					when others =>
-						RESULT_READY <= '0';
 						state <= WaitingForSample;
 				end case;
 			end if;

@@ -20,8 +20,12 @@ public slots:
 signals:
     void valueChanged(double newvalue);
     void valueUpdated(QWidget *w);
+    void editingAborted();
+    void focusLost();
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;
+private slots:
+    void continueEditing();
 private:
     void parseNewValue(double factor);
     QString unit, prefixes;

@@ -1,6 +1,7 @@
 #include "impedancematchdialog.h"
 #include "ui_impedancematchdialog.h"
 #include "Tools/eseries.h"
+#include "unit.h"
 
 using namespace std;
 
@@ -70,7 +71,7 @@ void ImpedanceMatchDialog::on_cSource_currentIndexChanged(int index)
         auto reflection = Z0 * (1.0 + data) / (1.0 - data);
         ui->zReal->setValue(reflection.real());
         ui->zImag->setValue(reflection.imag());
-        ui->zFreq->setValue(m->getFrequency());
+        ui->zFreq->setValue(m->getPosition());
     }
 }
 
@@ -111,7 +112,7 @@ void ImpedanceMatchDialog::calculateMatch()
         // convert X and B to inductor and capacitor
         bool twoCs = false;
         bool twoLs = false;
-        double L, C, C2, L2;
+        double L = 0, C = 0, C2 = 0, L2 = 0;
         if(X >= 0) {
             L = X/(2*M_PI*freq);
             if(B > 0) {
@@ -239,7 +240,7 @@ void ImpedanceMatchDialog::calculateMatch()
         ui->mReal->setValue(Zmatched.real());
         ui->mImag->setValue(Zmatched.imag());
         double reflection = abs((Zmatched-Z0)/(Zmatched+Z0));
-        auto loss = 20.0*log10(reflection);
+        auto loss = Unit::dB(reflection);
         ui->mLoss->setValue(loss);
 
         // set correct image

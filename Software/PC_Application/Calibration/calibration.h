@@ -27,6 +27,7 @@ public:
         Isolation,
         Through,
         Line,
+        Last,
     };
     void clearMeasurements();
     void clearMeasurement(Measurement type);
@@ -39,6 +40,7 @@ public:
         TransmissionNormalization,
         TRL,
         None,
+        Last,
     };
 
 
@@ -47,6 +49,7 @@ public:
     void resetErrorTerms();
 
     void correctMeasurement(Protocol::Datapoint &d);
+    void correctTraces(Trace &S11, Trace &S12, Trace &S21, Trace &S22);
 
     enum class InterpolationType {
         Unchanged, // Nothing has changed, settings and calibration points match
@@ -58,7 +61,9 @@ public:
 
     InterpolationType getInterpolation(Protocol::SweepSettings settings);
 
+    static Measurement MeasurementFromString(QString s);
     static QString MeasurementToString(Measurement m);
+    static Type TypeFromString(QString s);
     static QString TypeToString(Type t);
 
     class MeasurementInfo {
@@ -80,6 +85,7 @@ public:
     }
 
     std::vector<Trace*> getErrorTermTraces();
+    std::vector<Trace*> getMeasurementTraces();
 
     bool openFromFile(QString filename = QString());
     bool saveToFile(QString filename = QString());
@@ -136,6 +142,15 @@ private:
     std::vector<Point> points;
 
     Calkit kit;
+    QString descriptiveCalName();
+
+private:
+    QString currentCalFile;
+public:
+    QString getCurrentCalibrationFile();
+    double getMinFreq();
+    double getMaxFreq();
+    int getNumPoints();
 };
 
 #endif // CALIBRATION_H

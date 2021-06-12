@@ -99,8 +99,9 @@ MCU = $(CPU) -mthumb $(FLOAT-ABI) $(FPU)
 
 # C defines
 C_DEFS =  \
--DFW_MAJOR=0 \
+-DFW_MAJOR=1 \
 -DFW_MINOR=1 \
+-DFW_PATCH=1 \
 -DUSE_FULL_LL_DRIVER \
 -DHW_REVISION="'B'" \
 -D__weak="__attribute__((weak))" \

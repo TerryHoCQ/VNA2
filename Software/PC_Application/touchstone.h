@@ -4,11 +4,12 @@
 #include <complex>
 #include <vector>
 #include <string>
+#include <QString>
 
 class Touchstone
 {
 public:
-    enum class Unit {
+    enum class Scale {
         Hz,
         kHz,
         MHz,
@@ -29,7 +30,7 @@ public:
 
     Touchstone(unsigned int m_ports);
     void AddDatapoint(Datapoint p);
-    void toFile(std::string filename, Unit unit = Unit::GHz, Format format = Format::RealImaginary);
+    void toFile(std::string filename, Scale unit = Scale::GHz, Format format = Format::RealImaginary);
     static Touchstone fromFile(std::string filename);
     double minFreq();
     double maxFreq();
@@ -41,9 +42,12 @@ public:
     // remove all paramaters except the ones from port (port cnt starts at 0)
     void reduceTo1Port(unsigned int port);
     unsigned int ports() { return m_ports; }
+    QString getFilename() const;
+
 private:
     unsigned int m_ports;
     std::vector<Datapoint> m_datapoints;
+    QString filename;
 };
 
 #endif // TOUCHSTONE_H

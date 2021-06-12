@@ -4,29 +4,7 @@
 #include <QDialog>
 #include <QVariant>
 #include <exception>
-
-class QPointerVariant {
-public:
-    template <typename T> QPointerVariant(T *ptr)
-        : ptr(static_cast<void*>(ptr)),
-          variant(QVariant(*ptr)){};
-    void setValue(const QVariant &value) {
-        auto destType = variant.type();
-        if(!value.canConvert(destType)) {
-            throw std::runtime_error("Unable to convert QVariant to requested type");
-        }
-        variant = value;
-        variant.convert(destType);
-        QMetaType mt(destType);
-        mt.construct(ptr, variant.constData());
-    }
-    QVariant value() {
-        return QVariant(variant.type(), ptr);
-    }
-private:
-    void *ptr;
-    QVariant variant;
-};
+#include "Util/qpointervariant.h"
 
 class Preferences {
 public:
@@ -37,6 +15,8 @@ public:
     void store();
     void edit();
     void setDefault();
+
+    void manualTCPport() { TCPoverride = true; }
 
     struct {
         bool ConnectToFirstDevice;
@@ -66,6 +46,9 @@ public:
     struct {
         bool alwaysExciteBothPorts;
         bool suppressPeaks;
+        bool harmonicMixing;
+        bool useDFTinSAmode;
+        double RBWLimitForDFT;
     } Acquisition;
     struct {
         struct {
@@ -73,16 +56,27 @@ public:
             QColor axis;
             QColor divisions;
         } graphColors;
+        struct {
+            bool showDataOnGraphs;
+            bool showAllData;
+        } markerDefault;
+        struct {
+            bool enabled;
+            int port;
+        } SCPI;
     } General;
+
+    bool TCPoverride; // in case of manual port specification via command line
 private:
-    Preferences(){};
+    Preferences() :
+     TCPoverride(false) {};
     static Preferences instance;
     using SettingDescription = struct {
         QPointerVariant var;
         QString name;
         QVariant def;
     };
-    const std::array<SettingDescription, 22> descr = {{
+    const std::array<SettingDescription, 29> descr = {{
         {&Startup.ConnectToFirstDevice, "Startup.ConnectToFirstDevice", true},
         {&Startup.RememberSweepSettings, "Startup.RememberSweepSettings", false},
         {&Startup.DefaultSweep.start, "Startup.DefaultSweep.start", 1000000.0},
@@ -102,9 +96,16 @@ private:
         {&Startup.SA.signalID, "Startup.SA.signalID", true},
         {&Acquisition.alwaysExciteBothPorts, "Acquisition.alwaysExciteBothPorts", true},
         {&Acquisition.suppressPeaks, "Acquisition.suppressPeaks", true},
+        {&Acquisition.harmonicMixing, "Acquisition.harmonicMixing", false},
+        {&Acquisition.useDFTinSAmode, "Acquisition.useDFTinSAmode", true},
+        {&Acquisition.RBWLimitForDFT, "Acquisition.RBWLimitForDFT", 3000.0},
         {&General.graphColors.background, "General.graphColors.background", QColor(Qt::black)},
         {&General.graphColors.axis, "General.graphColors.axis", QColor(Qt::white)},
         {&General.graphColors.divisions, "General.graphColors.divisions", QColor(Qt::gray)},
+        {&General.markerDefault.showDataOnGraphs, "General.MarkerDefault.ShowDataOnGraphs", true},
+        {&General.markerDefault.showAllData, "General.MarkerDefault.ShowAllData", false},
+        {&General.SCPI.enabled, "General.SCPI.enabled", true},
+        {&General.SCPI.port, "General.SCPI.port", 19542},
     }};
 };
 

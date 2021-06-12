@@ -19,7 +19,7 @@ static uint8_t  *USBD_Class_GetDeviceQualifierDescriptor (uint16_t *length);
 
 static usbd_recv_callback_t cb;
 static uint8_t usb_receive_buffer[1024];
-static uint8_t usb_transmit_fifo[4092];
+static uint8_t usb_transmit_fifo[8192];
 static uint16_t usb_transmit_read_index = 0;
 static uint16_t usb_transmit_fifo_level = 0;
 static bool data_transmission_active = false;
@@ -110,7 +110,7 @@ __ALIGN_BEGIN uint8_t USBD_CfgFSDesc[USB_CONFIG_DESC_SIZ] __ALIGN_END =
 
 // See https://github.com/pbatard/libwdi/wiki/WCID-Devices for descriptor data
 // This requests to load the WinUSB driver for this device
-__ALIGN_BEGIN const uint8_t USBD_MicrosoftCompatibleID[40] __ALIGN_END =
+__ALIGN_BEGIN const char USBD_MicrosoftCompatibleID[40] __ALIGN_END =
 {
 	0x28, 0x00, 0x00, 0x00,
 	0x00, 0x01,
@@ -119,7 +119,7 @@ __ALIGN_BEGIN const uint8_t USBD_MicrosoftCompatibleID[40] __ALIGN_END =
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 	0x00,
 	0x01,
-	0x57, 0x49, 0x4E, 0x55, 0x53, 0x42, 0x00, 0x00,
+	'W','I','N','U','S','B','\0','\0',
 	0x00, 0x00, 0x00, 0x00,	0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
@@ -155,8 +155,8 @@ static bool trigger_next_fifo_transmission() {
 	if(continous_length > usb_transmit_fifo_level) {
 		continous_length = usb_transmit_fifo_level;
 	}
-	if(continous_length > sizeof(usb_transmit_fifo)/ 4) {
-		continous_length = sizeof(usb_transmit_fifo) / 4;
+	if(continous_length > sizeof(usb_transmit_fifo)/ 2) {
+		continous_length = sizeof(usb_transmit_fifo) / 2;
 	}
 	hUsbDeviceFS.ep_in[EP_DATA_IN_ADDRESS & 0x7F].total_length = continous_length;
 	return USBD_LL_Transmit(&hUsbDeviceFS, EP_DATA_IN_ADDRESS, &usb_transmit_fifo[usb_transmit_read_index], continous_length) == USBD_OK;
@@ -223,7 +223,7 @@ void usb_init(usbd_recv_callback_t receive_callback) {
 }
 bool usb_transmit(const uint8_t *data, uint16_t length) {
 	// attempt to add data to fifo
-	if(usb_transmit_fifo_level + length > sizeof(usb_transmit_fifo)) {
+	if(length > usb_available_buffer()) {
 		// data won't fit, abort
 		return false;
 	}
@@ -279,4 +279,8 @@ void USB_HP_IRQHandler(void)
 void USB_LP_IRQHandler(void)
 {
   HAL_PCD_IRQHandler(&hpcd_USB_FS);
+}
+
+uint16_t usb_available_buffer() {
+	return sizeof(usb_transmit_fifo) - usb_transmit_fifo_level;
 }

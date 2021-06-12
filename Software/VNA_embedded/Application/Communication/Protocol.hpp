@@ -4,7 +4,9 @@
 
 namespace Protocol {
 
-// When changing/adding/removing variables from these structs also adjust the decode/encode functions in Protocol.cpp
+static constexpr uint16_t Version = 5;
+
+#pragma pack(push, 1)
 
 using Datapoint = struct _datapoint {
 	float real_S11, imag_S11;
@@ -35,12 +37,15 @@ using ReferenceSettings = struct _referenceSettings {
 using GeneratorSettings = struct _generatorSettings {
 	uint64_t frequency;
 	int16_t cdbm_level;
-	uint8_t activePort;
+    uint8_t activePort :2;
+    uint8_t applyAmplitudeCorrection :1;
 };
 
 using DeviceInfo = struct _deviceInfo {
-    uint16_t FW_major;
-    uint16_t FW_minor;
+	uint16_t ProtocolVersion;
+    uint8_t FW_major;
+    uint8_t FW_minor;
+    uint8_t FW_patch;
     char HW_Revision;
     uint8_t extRefAvailable:1;
     uint8_t extRefInUse:1;
@@ -48,11 +53,21 @@ using DeviceInfo = struct _deviceInfo {
     uint8_t source_locked:1;
     uint8_t LO1_locked:1;
     uint8_t ADC_overload:1;
-    struct {
-        uint8_t source;
-        uint8_t LO1;
-        uint8_t MCU;
-    } temperatures;
+    uint8_t unlevel:1;
+	uint8_t temp_source;
+	uint8_t temp_LO1;
+	uint8_t temp_MCU;
+	uint64_t limits_minFreq;
+	uint64_t limits_maxFreq;
+	uint32_t limits_minIFBW;
+	uint32_t limits_maxIFBW;
+	uint16_t limits_maxPoints;
+	int16_t limits_cdbm_min;
+	int16_t limits_cdbm_max;
+	uint32_t limits_minRBW;
+	uint32_t limits_maxRBW;
+    uint8_t limits_maxAmplitudePoints;
+    uint64_t limits_maxFreqHarmonic;
 };
 
 using ManualStatus = struct _manualstatus {
@@ -107,6 +122,13 @@ using SpectrumAnalyzerSettings = struct _spectrumAnalyzerSettings {
 	uint8_t WindowType :2;
 	uint8_t SignalID :1;
 	uint8_t Detector :3;
+	uint8_t UseDFT :1;
+    uint8_t applyReceiverCorrection :1;
+    uint8_t trackingGenerator :1;
+    uint8_t applySourceCorrection :1;
+    uint8_t trackingGeneratorPort :1; // 0 for port1, 1 for port2
+    int64_t trackingGeneratorOffset;
+    int16_t trackingPower;
 };
 
 using SpectrumAnalyzerResult = struct _spectrumAnalyzerResult {
@@ -116,22 +138,22 @@ using SpectrumAnalyzerResult = struct _spectrumAnalyzerResult {
 	uint16_t pointNum;
 };
 
-using DeviceLimits = struct _deviceLimits {
-    uint64_t minFreq;
-    uint64_t maxFreq;
-    uint32_t minIFBW;
-    uint32_t maxIFBW;
-    uint16_t maxPoints;
-    int16_t cdbm_min;
-    int16_t cdbm_max;
-    uint32_t minRBW;
-    uint32_t maxRBW;
-};
-
 static constexpr uint16_t FirmwareChunkSize = 256;
 using FirmwarePacket = struct _firmwarePacket {
     uint32_t address;
     uint8_t data[FirmwareChunkSize];
+};
+
+using AmplitudeCorrectionPoint = struct _amplitudecorrectionpoint {
+	uint8_t totalPoints;
+	uint8_t pointNum;
+	uint32_t freq;
+	int16_t port1;
+	int16_t port2;
+};
+
+using FrequencyCorrection = struct _frequencycorrection {
+	float ppm;
 };
 
 enum class PacketType : uint8_t {
@@ -150,8 +172,14 @@ enum class PacketType : uint8_t {
 	Generator = 12,
 	SpectrumAnalyzerSettings = 13,
 	SpectrumAnalyzerResult =  14,
-    RequestDeviceLimits = 15,
-    DeviceLimits = 16,
+    RequestDeviceInfo = 15,
+	RequestSourceCal = 16,
+	RequestReceiverCal = 17,
+	SourceCalPoint = 18,
+	ReceiverCalPoint = 19,
+	SetIdle = 20,
+	RequestFrequencyCorrection = 21,
+	FrequencyCorrection = 22,
 };
 
 using PacketInfo = struct _packetinfo {
@@ -167,9 +195,12 @@ using PacketInfo = struct _packetinfo {
         ManualStatus status;
         SpectrumAnalyzerSettings spectrumSettings;
         SpectrumAnalyzerResult spectrumResult;
-        DeviceLimits limits;
+        AmplitudeCorrectionPoint amplitudePoint;
+        FrequencyCorrection frequencyCorrection;
 	};
 };
+
+#pragma pack(pop)
 
 uint32_t CRC32(uint32_t crc, const void *data, uint32_t len);
 uint16_t DecodeBuffer(uint8_t *buf, uint16_t len, PacketInfo *info);

@@ -11,18 +11,24 @@
 #include "Communication.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "Util.hpp"
+#include "usb.h"
 
 #define LOG_LEVEL	LOG_LEVEL_INFO
 #define LOG_MODULE	"VNA"
 #include "Log.h"
 
-static VNA::SweepCallback sweepCallback;
 static Protocol::SweepSettings settings;
 static uint16_t pointCnt;
 static bool excitingPort1;
 static Protocol::Datapoint data;
 static bool active = false;
 static bool sourceHighPower;
+static bool adcShifted;
+static uint32_t actualBandwidth;
+
+static constexpr uint8_t sourceHarmonic = 5;
+static constexpr uint8_t LOHarmonic = 3;
 
 using IFTableEntry = struct {
 	uint16_t pointCnt;
@@ -33,11 +39,19 @@ static constexpr uint16_t IFTableNumEntries = 500;
 static IFTableEntry IFTable[IFTableNumEntries];
 static uint16_t IFTableIndexCnt = 0;
 
-static constexpr uint32_t BandSwitchFrequency = 25000000;
+static constexpr float alternativeSamplerate = 914285.7143f;
+static constexpr uint8_t alternativePrescaler = 102400000UL / alternativeSamplerate;
+static_assert(alternativePrescaler * alternativeSamplerate == 102400000UL, "alternative ADCSamplerate can not be reached exactly");
+static constexpr uint16_t alternativePhaseInc = 4096 * HW::IF2 / alternativeSamplerate;
+static_assert(alternativePhaseInc * alternativeSamplerate == 4096 * HW::IF2, "DFT can not be computed for 2.IF when using alternative samplerate");
+
+// Constants for USB buffer overflow prevention
+static constexpr uint16_t maxPointsBetweenHalts = 40;
+static constexpr uint32_t reservedUSBbuffer = maxPointsBetweenHalts * (sizeof(Protocol::Datapoint) + 8 /*USB packet overhead*/);
 
 using namespace HWHAL;
 
-bool VNA::Setup(Protocol::SweepSettings s, SweepCallback cb) {
+bool VNA::Setup(Protocol::SweepSettings s) {
 	VNA::Stop();
 	vTaskDelay(5);
 	HW::SetMode(HW::Mode::VNA);
@@ -47,7 +61,6 @@ bool VNA::Setup(Protocol::SweepSettings s, SweepCallback cb) {
 		active = false;
 		return false;
 	}
-	sweepCallback = cb;
 	settings = s;
 	// Abort possible active sweep first
 	FPGA::SetMode(FPGA::Mode::FPGA);
@@ -59,7 +72,7 @@ bool VNA::Setup(Protocol::SweepSettings s, SweepCallback cb) {
 	if(samplesPerPoint%16) {
 		samplesPerPoint += 16 - samplesPerPoint%16;
 	}
-	uint32_t actualBandwidth = HW::ADCSamplerate / samplesPerPoint;
+	actualBandwidth = HW::ADCSamplerate / samplesPerPoint;
 	// has to be one less than actual number of samples
 	FPGA::SetSamplesPerPoint(samplesPerPoint);
 
@@ -98,29 +111,53 @@ bool VNA::Setup(Protocol::SweepSettings s, SweepCallback cb) {
 	// invalidate first entry of IFTable, preventing switing of 2.LO in halted callback
 	IFTable[0].pointCnt = 0xFFFF;
 
+	uint16_t pointsWithoutHalt = 0;
+
 	// Transfer PLL configuration to FPGA
 	for (uint16_t i = 0; i < points; i++) {
+		bool harmonic_mixing = false;
 		uint64_t freq = s.f_start + (s.f_stop - s.f_start) * i / (points - 1);
+		freq = Cal::FrequencyCorrectionToDevice(freq);
+
+		if(freq > 6000000000ULL) {
+			harmonic_mixing = true;
+		}
+
 		// SetFrequency only manipulates the register content in RAM, no SPI communication is done.
 		// No mode-switch of FPGA necessary here.
 
 		bool needs_halt = false;
 		uint64_t actualSourceFreq;
 		bool lowband = false;
-		if (freq < BandSwitchFrequency) {
+		if (freq < HW::BandSwitchFrequency) {
 			needs_halt = true;
 			lowband = true;
 			actualSourceFreq = freq;
 		} else {
-			Source.SetFrequency(freq);
+			uint64_t srcFreq = freq;
+			if(harmonic_mixing) {
+				srcFreq /= sourceHarmonic;
+			}
+			Source.SetFrequency(srcFreq);
 			actualSourceFreq = Source.GetActualFrequency();
+			if(harmonic_mixing) {
+				actualSourceFreq *= sourceHarmonic;
+			}
 		}
 		if (last_lowband && !lowband) {
 			// additional halt before first highband point to enable highband source
 			needs_halt = true;
 		}
-		LO1.SetFrequency(freq + HW::IF1);
-		uint32_t actualFirstIF = LO1.GetActualFrequency() - actualSourceFreq;
+		uint64_t LOFreq = freq + HW::IF1;
+		if(harmonic_mixing) {
+			LOFreq /= LOHarmonic;
+		}
+		LO1.SetFrequency(LOFreq);
+		uint64_t actualLO1 = LO1.GetActualFrequency();
+		if(harmonic_mixing) {
+			actualLO1 *= LOHarmonic;
+		}
+		uint32_t actualFirstIF = actualLO1 - actualSourceFreq;
 		uint32_t actualFinalIF = actualFirstIF - last_LO2;
 		uint32_t IFdeviation = abs(actualFinalIF - HW::IF2);
 		bool needs_LO2_shift = false;
@@ -132,12 +169,17 @@ bool VNA::Setup(Protocol::SweepSettings s, SweepCallback cb) {
 				// still room in table
 				needs_halt = true;
 				IFTable[IFTableIndexCnt].pointCnt = i;
-				// Configure LO2 for the changed IF1. This is not necessary right now but it will generate
-				// the correct clock settings
-				last_LO2 = actualFirstIF - HW::IF2;
-				LOG_INFO("Changing 2.LO to %lu at point %lu (%lu%06luHz) to reach correct 2.IF frequency",
-						last_LO2, i, (uint32_t ) (freq / 1000000),
-						(uint32_t ) (freq % 1000000));
+				if(IFTableIndexCnt < IFTableNumEntries - 1) {
+					// Configure LO2 for the changed IF1. This is not necessary right now but it will generate
+					// the correct clock settings
+					last_LO2 = actualFirstIF - HW::IF2;
+					LOG_INFO("Changing 2.LO to %lu at point %lu (%lu%06luHz) to reach correct 2.IF frequency",
+							last_LO2, i, (uint32_t ) (freq / 1000000),
+							(uint32_t ) (freq % 1000000));
+				} else {
+					// last entry in IF table, revert LO2 to default
+					last_LO2 = HW::IF1 - HW::IF2;
+				}
 				Si5351.SetCLK(SiChannel::RefLO2, last_LO2,
 						Si5351C::PLL::B, Si5351C::DriveStrength::mA2);
 				// store calculated clock configuration for later change
@@ -151,6 +193,17 @@ bool VNA::Setup(Protocol::SweepSettings s, SweepCallback cb) {
 			LOG_WARN(
 					"PLL deviation of %luHz for measurement at %lu%06luHz, will cause a peak",
 					IFdeviation, (uint32_t ) (freq / 1000000), (uint32_t ) (freq % 1000000));
+		}
+
+		// halt on regular intervals to prevent USB buffer overflow
+		if(!needs_halt) {
+			pointsWithoutHalt++;
+			if(pointsWithoutHalt > maxPointsBetweenHalts) {
+				needs_halt = true;
+			}
+		}
+		if(needs_halt) {
+			pointsWithoutHalt = 0;
 		}
 
 		FPGA::WriteSweepConfig(i, lowband, Source.GetRegisters(),
@@ -178,20 +231,30 @@ bool VNA::Setup(Protocol::SweepSettings s, SweepCallback cb) {
 	// starting port depends on whether port 1 is active in sweep
 	excitingPort1 = s.excitePort1;
 	IFTableIndexCnt = 0;
+	adcShifted = false;
 	active = true;
+	// Enable new data and sweep halt interrupt
+	FPGA::EnableInterrupt(FPGA::Interrupt::NewData);
+	FPGA::EnableInterrupt(FPGA::Interrupt::SweepHalted);
 	// Start the sweep
 	FPGA::StartSweep();
 	return true;
 }
 
 static void PassOnData() {
-	if (sweepCallback) {
-		sweepCallback(data);
-	}
+	Protocol::PacketInfo info;
+	info.type = Protocol::PacketType::Datapoint;
+	info.datapoint = data;
+	Communication::Send(info);
 }
 
 bool VNA::MeasurementDone(const FPGA::SamplingResult &result) {
 	if(!active) {
+		return false;
+	}
+	if(result.pointNum != pointCnt || !result.activePort != excitingPort1) {
+		LOG_WARN("Indicated point does not match (%u != %u, %d != %d)", result.pointNum, pointCnt, result.activePort, !excitingPort1);
+		FPGA::AbortSweep();
 		return false;
 	}
 	// normal sweep mode
@@ -244,13 +307,8 @@ void VNA::Work() {
 	// Compile info packet
 	Protocol::PacketInfo packet;
 	packet.type = Protocol::PacketType::DeviceInfo;
-	packet.info.FPGA_configured = 1;
-	packet.info.FW_major = FW_MAJOR;
-	packet.info.FW_minor = FW_MINOR;
-	packet.info.HW_Revision = HW_REVISION;
-	HW::fillDeviceInfo(&packet.info);
+	HW::fillDeviceInfo(&packet.info, true);
 	Communication::Send(packet);
-	FPGA::ResetADCLimits();
 	// Start next sweep
 	FPGA::StartSweep();
 }
@@ -261,7 +319,7 @@ void VNA::SweepHalted() {
 	}
 	LOG_DEBUG("Halted before point %d", pointCnt);
 	// Check if IF table has entry at this point
-	if (IFTable[IFTableIndexCnt].pointCnt == pointCnt) {
+	if (IFTableIndexCnt < IFTableNumEntries && IFTable[IFTableIndexCnt].pointCnt == pointCnt) {
 		Si5351.WriteRawCLKConfig(SiChannel::Port1LO2, IFTable[IFTableIndexCnt].clkconfig);
 		Si5351.WriteRawCLKConfig(SiChannel::Port2LO2, IFTable[IFTableIndexCnt].clkconfig);
 		Si5351.WriteRawCLKConfig(SiChannel::RefLO2, IFTable[IFTableIndexCnt].clkconfig);
@@ -273,15 +331,26 @@ void VNA::SweepHalted() {
 	uint64_t frequency = settings.f_start
 			+ (settings.f_stop - settings.f_start) * pointCnt
 					/ (settings.points - 1);
-	if (frequency < BandSwitchFrequency) {
+	bool adcShiftRequired = false;
+	if (frequency < HW::BandSwitchFrequency) {
 		// need the Si5351 as Source
 		Si5351.SetCLK(SiChannel::LowbandSource, frequency, Si5351C::PLL::B,
-				sourceHighPower ? Si5351C::DriveStrength::mA8 : Si5351C::DriveStrength::mA2);
+				sourceHighPower ? Si5351C::DriveStrength::mA8 : Si5351C::DriveStrength::mA4);
 		if (pointCnt == 0) {
 			// First point in sweep, enable CLK
 			Si5351.Enable(SiChannel::LowbandSource);
 			FPGA::Disable(FPGA::Periphery::SourceRF);
 			Delay::us(1300);
+		}
+
+		// At low frequencies the 1.LO feedtrough mixes with the 2.LO in the second mixer.
+		// Depending on the stimulus frequency, the resulting mixing product might alias to the 2.IF
+		// in the ADC which causes a spike. Check for this and shift the ADC sampling frequency if necessary
+		uint32_t LO_mixing = (HW::IF1 + frequency) - (HW::IF1 - HW::IF2);
+		if(abs(Util::Alias(LO_mixing, HW::ADCSamplerate) - HW::IF2) <= actualBandwidth * 2) {
+			// the image is in or near the IF bandwidth and would cause a peak
+			// Use a slightly different ADC samplerate
+			adcShiftRequired = true;
 		}
 	} else if(!FPGA::IsEnabled(FPGA::Periphery::SourceRF)){
 		// first sweep point in highband is also halted, disable lowband source
@@ -289,7 +358,29 @@ void VNA::SweepHalted() {
 		FPGA::Enable(FPGA::Periphery::SourceRF);
 	}
 
-	FPGA::ResumeHaltedSweep();
+	if(adcShiftRequired) {
+		FPGA::WriteRegister(FPGA::Reg::ADCPrescaler, alternativePrescaler);
+		FPGA::WriteRegister(FPGA::Reg::PhaseIncrement, alternativePhaseInc);
+		adcShifted = true;
+	} else if(adcShifted) {
+		// reset to default value
+		FPGA::WriteRegister(FPGA::Reg::ADCPrescaler, HW::ADCprescaler);
+		FPGA::WriteRegister(FPGA::Reg::PhaseIncrement, HW::DFTphaseInc);
+		adcShifted = false;
+	}
+
+	if(usb_available_buffer() >= reservedUSBbuffer) {
+		// enough space available, can resume immediately
+		FPGA::ResumeHaltedSweep();
+	} else {
+		// USB buffer could potentially overflow before next halted point, wait until more space is available.
+		// This function is called from a low level interrupt, need to dispatch to lower priority to allow USB
+		// handling to continue
+		STM::DispatchToInterrupt([](){
+			while(usb_available_buffer() < reservedUSBbuffer);
+			FPGA::ResumeHaltedSweep();
+		});
+	}
 }
 
 void VNA::Stop() {

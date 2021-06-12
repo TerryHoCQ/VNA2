@@ -5,11 +5,56 @@
 #include "CustomWidgets/siunitedit.h"
 #include <QDebug>
 
+using namespace std;
+
+static constexpr int rowHeight = 21;
+
 TraceMarkerModel::TraceMarkerModel(TraceModel &model, QObject *parent)
-    : QAbstractTableModel(parent),
+    : QAbstractItemModel(parent),
       model(model)
 {
+    model.setMarkerModel(this);
     markers.clear();
+    root = new TraceMarker(this);
+}
+
+TraceMarkerModel::~TraceMarkerModel()
+{
+    delete root;
+}
+
+QModelIndex TraceMarkerModel::index(int row, int column, const QModelIndex &parent) const
+{
+    if (!hasIndex(row, column, parent)) {
+        return QModelIndex();
+    }
+    if(parent.isValid()) {
+        auto parentItem = markerFromIndex(parent);
+        auto child = parentItem->helperMarker(row);
+        if(child) {
+            return createIndex(row, column, parentItem);
+        }
+    }
+    return createIndex(row, column, root);
+}
+
+QModelIndex TraceMarkerModel::parent(const QModelIndex &index) const
+{
+    if (!index.isValid()) {
+        return QModelIndex();
+    }
+
+    auto childItem = markerFromIndex(index);
+    auto *parentItem = childItem->getParent();
+    if(parentItem) {
+        // find out the number of the child
+        auto it = find(markers.begin(), markers.end(), parentItem);
+        auto row = it - markers.begin();
+        return createIndex(row, 0, root);
+    } else {
+        // no parent
+        return QModelIndex();
+    }
 }
 
 TraceMarker *TraceMarkerModel::createDefaultMarker()
@@ -28,7 +73,7 @@ TraceMarker *TraceMarkerModel::createDefaultMarker()
         }
     } while (used);
     auto marker = new TraceMarker(this, number);
-    marker->setFrequency(2150000000);
+    marker->setPosition(2150000000);
     marker->assignTrace(model.trace(0));
     return marker;
 }
@@ -39,19 +84,25 @@ void TraceMarkerModel::addMarker(TraceMarker *t)
     markers.push_back(t);
     endInsertRows();
     connect(t, &TraceMarker::dataChanged, this, &TraceMarkerModel::markerDataChanged);
+    connect(t, &TraceMarker::typeChanged, this, &TraceMarkerModel::markerDataChanged);
+    connect(t, &TraceMarker::traceChanged, this, &TraceMarkerModel::markerDataChanged);
+    connect(t, &TraceMarker::beginRemoveHelperMarkers, [=](TraceMarker *m) {
+         auto row = find(markers.begin(), markers.end(), m) - markers.begin();
+         auto modelIndex = createIndex(row, 0, root);
+         beginRemoveRows(modelIndex, 0, m->getHelperMarkers().size() - 1);
+    });
+    connect(t, &TraceMarker::endRemoveHelperMarkers, [=](TraceMarker *m) {
+        endRemoveRows();
+        markerDataChanged(m);
+    });
     connect(t, &TraceMarker::deleted, this, qOverload<TraceMarker*>(&TraceMarkerModel::removeMarker));
     emit markerAdded(t);
 }
 
-void TraceMarkerModel::removeMarker(unsigned int index, bool delete_marker)
+void TraceMarkerModel::removeMarker(unsigned int index)
 {
     if (index < markers.size()) {
         beginRemoveRows(QModelIndex(), index, index);
-        if(delete_marker) {
-            // disconnect from deleted signal prior to deleting the marker. Otherwise a second (possibly non-existent) will be erased from the list
-            disconnect(markers[index], &TraceMarker::deleted, this, qOverload<TraceMarker*>(&TraceMarkerModel::removeMarker));
-            delete markers[index];
-        }
         markers.erase(markers.begin() + index);
         endRemoveRows();
     }
@@ -61,18 +112,23 @@ void TraceMarkerModel::removeMarker(TraceMarker *m)
 {
     auto it = std::find(markers.begin(), markers.end(), m);
     if(it != markers.end()) {
-        removeMarker(it - markers.begin(), false);
+        removeMarker(it - markers.begin());
     }
 }
 
 void TraceMarkerModel::markerDataChanged(TraceMarker *m)
 {
     auto row = find(markers.begin(), markers.end(), m) - markers.begin();
-    if(m->editingFrequeny) {
+    if(m->editingFrequency) {
         // only update the other columns, do not override editor data
         emit dataChanged(index(row, ColIndexData), index(row, ColIndexData));
     } else {
-        emit dataChanged(index(row, ColIndexSettings), index(row, ColIndexData));
+        emit dataChanged(index(row, ColIndexNumber), index(row, ColIndexData));
+        // also update any potential helper markers
+        for(unsigned int i=0;i<m->getHelperMarkers().size();i++) {
+            auto modelIndex = createIndex(i, 0, m);
+            emit dataChanged(index(i, ColIndexNumber, modelIndex), index(i, ColIndexData, modelIndex));
+        }
     }
 }
 
@@ -81,9 +137,13 @@ TraceMarker *TraceMarkerModel::marker(int index)
     return markers.at(index);
 }
 
-int TraceMarkerModel::rowCount(const QModelIndex &) const
+int TraceMarkerModel::rowCount(const QModelIndex &index) const
 {
-    return markers.size();
+    if(!index.isValid()) {
+        return markers.size();
+    }
+    auto marker = markerFromIndex(index);
+    return marker->getHelperMarkers().size();
 }
 
 int TraceMarkerModel::columnCount(const QModelIndex &) const
@@ -93,29 +153,23 @@ int TraceMarkerModel::columnCount(const QModelIndex &) const
 
 QVariant TraceMarkerModel::data(const QModelIndex &index, int role) const
 {
-    auto marker = markers[index.row()];
-    switch(index.column()) {
-    case ColIndexNumber:
-        switch(role) {
-        case Qt::DisplayRole: return QVariant((unsigned int)marker->getNumber()); break;
-        }
-    case ColIndexTrace:
-        switch(role) {
-        case Qt::DisplayRole:
+    auto marker = markerFromIndex(index);
+    if(role == Qt::DisplayRole) {
+        switch(index.column()) {
+        case ColIndexNumber:
+            return QString::number(marker->getNumber()) + marker->getSuffix();
+        case ColIndexTrace:
             if(marker->getTrace()) {
                 return marker->getTrace()->name();
             }
             break;
+        case ColIndexType:
+            return marker->readableType();
+        case ColIndexSettings:
+            return marker->readableSettings();
+        case ColIndexData:
+            return marker->readableData();
         }
-    case ColIndexSettings:
-        switch(role) {
-        case Qt::DisplayRole: return marker->readableSettings(); break;
-        }
-    case ColIndexData:
-        switch(role) {
-            case Qt::DisplayRole: return marker->readableData(); break;
-        }
-    break;
     }
     return QVariant();
 }
@@ -141,15 +195,15 @@ bool TraceMarkerModel::setData(const QModelIndex &index, const QVariant &value, 
     if((unsigned int) index.row() >= markers.size()) {
         return false;
     }
-    auto m = markers[index.row()];
+    auto m = markerFromIndex(index);
     switch(index.column()) {
     case ColIndexNumber: {
         m->setNumber(value.toInt());
     }
         break;
     case ColIndexTrace: {
-        auto trace = qvariant_cast<Trace*>(value);
-        m->assignTrace(trace);
+        auto info = qvariant_cast<MarkerWidgetTraceInfo>(value);
+        m->assignTrace(info.trace);
     }
         break;
     case ColIndexSettings: {
@@ -163,13 +217,18 @@ bool TraceMarkerModel::setData(const QModelIndex &index, const QVariant &value, 
 
 Qt::ItemFlags TraceMarkerModel::flags(const QModelIndex &index) const
 {
-    int flags = Qt::NoItemFlags;
+    int flags = Qt::ItemIsSelectable;
     switch(index.column()) {
     case ColIndexNumber: flags |= Qt::ItemIsEnabled | Qt::ItemIsEditable; break;
     case ColIndexTrace: flags |= Qt::ItemIsEnabled | Qt::ItemIsEditable; break;
     case ColIndexType: flags |= Qt::ItemIsEnabled | Qt::ItemIsEditable; break;
     case ColIndexSettings: flags |= Qt::ItemIsEnabled | Qt::ItemIsEditable; break;
     case ColIndexData: flags |= Qt::ItemIsEnabled; break;
+    }
+    auto marker = markerFromIndex(index);
+    if(marker->getParent()) {
+        // this is a helper marker -> nothing is editable
+        flags &= ~Qt::ItemIsEditable;
     }
     return (Qt::ItemFlags) flags;
 }
@@ -202,27 +261,98 @@ void TraceMarkerModel::updateMarkers()
     }
 }
 
+TraceMarker *TraceMarkerModel::markerFromIndex(const QModelIndex &index) const
+{
+    auto m = static_cast<TraceMarker*>(index.internalPointer());
+    if(m == root) {
+        return markers[index.row()];
+    } else {
+        return m->helperMarker(index.row());
+    }
+}
+
+nlohmann::json TraceMarkerModel::toJSON()
+{
+    nlohmann::json j;
+    for(auto m : markers) {
+        j.push_back(m->toJSON());
+    }
+    return j;
+}
+
+void TraceMarkerModel::fromJSON(nlohmann::json j)
+{
+    // remove old markers
+    while(markers.size() > 0) {
+        removeMarker((unsigned int) 0);
+    }
+    for(auto jm : j) {
+        auto m = new TraceMarker(this);
+        try {
+            m->fromJSON(jm);
+            addMarker(m);
+        } catch (const exception &e) {
+            qWarning() << "Failed to creat marker from JSON:" << e.what();
+            delete m;
+        }
+    }
+    // second pass to assign delta markers
+    for(unsigned int i=0;i<markers.size();i++) {
+        if(markers[i]->getType() == TraceMarker::Type::Delta) {
+            if(!j[i].contains("delta_marker")) {
+                qWarning() << "JSON data does not contain assigned delta marker";
+                continue;
+            }
+            unsigned int hash = j[i]["delta_marker"];
+            // attempt to find correct marker
+            unsigned int m_delta = 0;
+            for(;m_delta < markers.size();m_delta++) {
+                auto m = markers[m_delta];
+                if(m->toHash() == hash) {
+                    markers[i]->assignDeltaMarker(m);
+                    break;
+                }
+            }
+            if(m_delta >= markers.size()) {
+                qWarning() << "Unable to find assigned delta marker:" << hash;
+            }
+        }
+    }
+    // All done loading the markers, trigger update of persistent editors
+    emit setupLoadComplete();
+}
+
+QSize MarkerTraceDelegate::sizeHint(const QStyleOptionViewItem &, const QModelIndex &) const
+{
+    return QSize(0, rowHeight);
+}
+
 QWidget *MarkerTraceDelegate::createEditor(QWidget *parent, const QStyleOptionViewItem &, const QModelIndex &index) const
 {
     auto model = (TraceMarkerModel*) index.model();
     auto c = new QComboBox(parent);
+    c->setMaximumHeight(rowHeight);
     connect(c, qOverload<int>(&QComboBox::currentIndexChanged), [c](int) {
         c->clearFocus();
     });
     auto traces = model->getModel().getTraces();
     for(auto t : traces) {
-        c->addItem(t->name(), QVariant::fromValue<Trace*>(t));
+        MarkerWidgetTraceInfo info;
+        info.trace = t;
+        c->addItem(t->name(), QVariant::fromValue(info));
     }
     return c;
 }
 
 void MarkerTraceDelegate::setEditorData(QWidget *editor, const QModelIndex &index) const
 {
-    auto model = (TraceMarkerModel*) index.model();
-    auto marker = model->getMarkers()[index.row()];
+    auto marker = static_cast<const TraceMarkerModel*>(index.model())->markerFromIndex(index);
     auto c = (QComboBox*) editor;
+    MarkerWidgetTraceInfo markerInfo;
+    markerInfo.trace = marker->trace();
     for(int i=0;i<c->count();i++) {
-        if(qvariant_cast<Trace*>(c->itemData(i)) == marker->trace()) {
+        auto info = qvariant_cast<MarkerWidgetTraceInfo>(c->itemData(i));
+        if(info == markerInfo) {
             c->setCurrentIndex(i);
             return;
         }
@@ -236,15 +366,23 @@ void MarkerTraceDelegate::setModelData(QWidget *editor, QAbstractItemModel *mode
     markerModel->setData(index, c->itemData(c->currentIndex()));
 }
 
-QWidget *MarkerSettingsDelegate::createEditor(QWidget *parent, const QStyleOptionViewItem &option, const QModelIndex &index) const
+QSize MarkerSettingsDelegate::sizeHint(const QStyleOptionViewItem &, const QModelIndex &) const
 {
-    auto model = (TraceMarkerModel*) index.model();
-    auto marker = model->getMarkers()[index.row()];
-    marker->editingFrequeny = true;
+    return QSize(0, rowHeight);
+}
+
+QWidget *MarkerSettingsDelegate::createEditor(QWidget *parent, const QStyleOptionViewItem &, const QModelIndex &index) const
+{
+    auto marker = static_cast<const TraceMarkerModel*>(index.model())->markerFromIndex(index);
+    marker->editingFrequency = true;
     auto e = marker->getSettingsEditor();
     if(e) {
+        e->setMaximumHeight(rowHeight);
         e->setParent(parent);
         connect(e, &SIUnitEdit::valueUpdated, this, &MarkerSettingsDelegate::commitData);
+        connect(e, &SIUnitEdit::focusLost, [=](){
+            marker->editingFrequency = false;
+        });
     }
     return e;
 }
@@ -252,25 +390,26 @@ QWidget *MarkerSettingsDelegate::createEditor(QWidget *parent, const QStyleOptio
 void MarkerSettingsDelegate::setModelData(QWidget *editor, QAbstractItemModel *model, const QModelIndex &index) const
 {
     auto markerModel = (TraceMarkerModel*) model;
-    auto marker = markerModel->getMarkers()[index.row()];
-    marker->editingFrequeny = false;
     auto si = (SIUnitEdit*) editor;
     markerModel->setData(index, si->value());
 }
 
-QWidget *MarkerTypeDelegate::createEditor(QWidget *parent, const QStyleOptionViewItem &option, const QModelIndex &index) const
+QSize MarkerTypeDelegate::sizeHint(const QStyleOptionViewItem &, const QModelIndex &) const
 {
-    auto model = (TraceMarkerModel*) index.model();
-    auto marker = model->getMarkers()[index.row()];
+    return QSize(0, rowHeight);
+}
+
+QWidget *MarkerTypeDelegate::createEditor(QWidget *parent, const QStyleOptionViewItem &, const QModelIndex &index) const
+{
+    auto marker = static_cast<const TraceMarkerModel*>(index.model())->markerFromIndex(index);
     auto editor = marker->getTypeEditor(const_cast<MarkerTypeDelegate*>(this));
+    editor->setMaximumHeight(rowHeight);
     editor->setParent(parent);
-//    connect(editor, &QWidget::focusC)
     return editor;
 }
 
-void MarkerTypeDelegate::setModelData(QWidget *editor, QAbstractItemModel *model, const QModelIndex &index) const
+void MarkerTypeDelegate::setModelData(QWidget *editor, QAbstractItemModel *, const QModelIndex &index) const
 {
-    auto markerModel = (TraceMarkerModel*) model;
-    auto marker = markerModel->getMarkers()[index.row()];
+    auto marker = static_cast<const TraceMarkerModel*>(index.model())->markerFromIndex(index);
     marker->updateTypeFromEditor(editor);
 }

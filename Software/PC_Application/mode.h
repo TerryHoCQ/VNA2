@@ -8,18 +8,23 @@
 #include <QDockWidget>
 #include <set>
 #include "appwindow.h"
+#include "savable.h"
 
-class Mode : public QWidget
+class Mode : public QObject, public Savable
 {
 public:
     Mode(AppWindow *window, QString name);
-    virtual void activate();
-    virtual void deactivate();
+
+    virtual void activate(); // derived classes must call Mode::activate before doing anything
+    virtual void deactivate(); // derived classes must call Mode::deactivate before returning
+    virtual void shutdown(){}; // called when the application is about to exit
     QString getName() const;
     static Mode *getActiveMode();
 
     virtual void initializeDevice() = 0;
     virtual void deviceDisconnected(){};
+
+    virtual void saveSreenshot();
 
 protected:
     // call once the derived class is fully initialized

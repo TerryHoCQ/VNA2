@@ -32,7 +32,7 @@
    <item>
     <widget class="QTabWidget" name="tabWidget">
      <property name="currentIndex">
-      <number>0</number>
+      <number>1</number>
      </property>
      <widget class="QWidget" name="tab">
       <attribute name="title">
@@ -97,7 +97,7 @@
                 </widget>
                </item>
                <item row="1" column="1">
-                <widget class="QLineEdit" name="short_delay"/>
+                <widget class="SIUnitEdit" name="short_delay"/>
                </item>
                <item row="2" column="0">
                 <widget class="QLabel" name="label_10">
@@ -107,50 +107,50 @@
                 </widget>
                </item>
                <item row="2" column="1">
-                <widget class="QLineEdit" name="short_loss"/>
+                <widget class="SIUnitEdit" name="short_loss"/>
                </item>
                <item row="3" column="0">
                 <widget class="QLabel" name="label_11">
                  <property name="text">
-                  <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;L0 [10&lt;span style=&quot; vertical-align:super;&quot;&gt;-12&lt;/span&gt;F]:&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                  <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;L0 [10&lt;span style=&quot; vertical-align:super;&quot;&gt;-12&lt;/span&gt;H]:&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
                  </property>
                 </widget>
                </item>
                <item row="3" column="1">
-                <widget class="QLineEdit" name="short_L0"/>
+                <widget class="SIUnitEdit" name="short_L0"/>
                </item>
                <item row="4" column="0">
                 <widget class="QLabel" name="label_12">
                  <property name="text">
-                  <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;L1 [10&lt;span style=&quot; vertical-align:super;&quot;&gt;-24&lt;/span&gt;F/Hz]:&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                  <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;L1 [10&lt;span style=&quot; vertical-align:super;&quot;&gt;-24&lt;/span&gt;H/Hz]:&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
                  </property>
                 </widget>
                </item>
                <item row="4" column="1">
-                <widget class="QLineEdit" name="short_L1"/>
+                <widget class="SIUnitEdit" name="short_L1"/>
                </item>
                <item row="5" column="0">
                 <widget class="QLabel" name="label_13">
                  <property name="text">
-                  <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;L2 [10&lt;span style=&quot; vertical-align:super;&quot;&gt;-33&lt;/span&gt;F/Hz&lt;span style=&quot; vertical-align:super;&quot;&gt;2&lt;/span&gt;]:&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                  <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;L2 [10&lt;span style=&quot; vertical-align:super;&quot;&gt;-33&lt;/span&gt;H/Hz&lt;span style=&quot; vertical-align:super;&quot;&gt;2&lt;/span&gt;]:&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
                  </property>
                 </widget>
                </item>
                <item row="5" column="1">
-                <widget class="QLineEdit" name="short_L2"/>
+                <widget class="SIUnitEdit" name="short_L2"/>
                </item>
                <item row="6" column="0">
                 <widget class="QLabel" name="label_14">
                  <property name="text">
-                  <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;L3 [10&lt;span style=&quot; vertical-align:super;&quot;&gt;-42&lt;/span&gt;F/Hz&lt;span style=&quot; vertical-align:super;&quot;&gt;3&lt;/span&gt;]:&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                  <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;L3 [10&lt;span style=&quot; vertical-align:super;&quot;&gt;-42&lt;/span&gt;H/Hz&lt;span style=&quot; vertical-align:super;&quot;&gt;3&lt;/span&gt;]:&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
                  </property>
                 </widget>
                </item>
                <item row="6" column="1">
-                <widget class="QLineEdit" name="short_L3"/>
+                <widget class="SIUnitEdit" name="short_L3"/>
                </item>
                <item row="0" column="1">
-                <widget class="QLineEdit" name="short_Z0">
+                <widget class="SIUnitEdit" name="short_Z0">
                  <property name="enabled">
                   <bool>false</bool>
                  </property>
@@ -159,7 +159,7 @@
                <item row="0" column="0">
                 <widget class="QLabel" name="label_16">
                  <property name="text">
-                  <string>Z0 [Ω]:</string>
+                  <string>Z0:</string>
                  </property>
                 </widget>
                </item>
@@ -243,7 +243,7 @@
                 </widget>
                </item>
                <item row="1" column="1">
-                <widget class="QLineEdit" name="open_delay"/>
+                <widget class="SIUnitEdit" name="open_delay"/>
                </item>
                <item row="2" column="0">
                 <widget class="QLabel" name="label_2">
@@ -253,7 +253,7 @@
                 </widget>
                </item>
                <item row="2" column="1">
-                <widget class="QLineEdit" name="open_loss"/>
+                <widget class="SIUnitEdit" name="open_loss"/>
                </item>
                <item row="3" column="0">
                 <widget class="QLabel" name="label_3">
@@ -263,7 +263,7 @@
                 </widget>
                </item>
                <item row="3" column="1">
-                <widget class="QLineEdit" name="open_C0"/>
+                <widget class="SIUnitEdit" name="open_C0"/>
                </item>
                <item row="4" column="0">
                 <widget class="QLabel" name="label_4">
@@ -273,7 +273,7 @@
                 </widget>
                </item>
                <item row="4" column="1">
-                <widget class="QLineEdit" name="open_C1"/>
+                <widget class="SIUnitEdit" name="open_C1"/>
                </item>
                <item row="5" column="0">
                 <widget class="QLabel" name="label_5">
@@ -283,20 +283,20 @@
                 </widget>
                </item>
                <item row="5" column="1">
-                <widget class="QLineEdit" name="open_C2"/>
+                <widget class="SIUnitEdit" name="open_C2"/>
                </item>
                <item row="6" column="0">
                 <widget class="QLabel" name="label_6">
                  <property name="text">
-                  <string>C0 [10&lt;sup&gt;-45&lt;/sup&gt;F/Hz&lt;sup&gt;3&lt;/sup&gt;]:</string>
+                  <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;C3 [10&lt;span style=&quot; vertical-align:super;&quot;&gt;-45&lt;/span&gt;F/Hz&lt;span style=&quot; vertical-align:super;&quot;&gt;3&lt;/span&gt;]:&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
                  </property>
                 </widget>
                </item>
                <item row="6" column="1">
-                <widget class="QLineEdit" name="open_C3"/>
+                <widget class="SIUnitEdit" name="open_C3"/>
                </item>
                <item row="0" column="1">
-                <widget class="QLineEdit" name="open_Z0">
+                <widget class="SIUnitEdit" name="open_Z0">
                  <property name="enabled">
                   <bool>false</bool>
                  </property>
@@ -305,7 +305,7 @@
                <item row="0" column="0">
                 <widget class="QLabel" name="label_15">
                  <property name="text">
-                  <string>Z0 [Ω]:</string>
+                  <string>Z0:</string>
                  </property>
                 </widget>
                </item>
@@ -384,16 +384,46 @@
                <item row="0" column="0">
                 <widget class="QLabel" name="label_30">
                  <property name="text">
-                  <string>Z0 [Ω]:</string>
+                  <string>Z0:</string>
                  </property>
                 </widget>
                </item>
                <item row="0" column="1">
-                <widget class="QLineEdit" name="load_Z0">
+                <widget class="SIUnitEdit" name="load_Z0">
                  <property name="enabled">
-                  <bool>false</bool>
+                  <bool>true</bool>
                  </property>
                 </widget>
+               </item>
+               <item row="1" column="0">
+                <widget class="QLabel" name="label_17">
+                 <property name="text">
+                  <string>Offset delay [ps]:</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="1" column="1">
+                <widget class="SIUnitEdit" name="load_delay"/>
+               </item>
+               <item row="2" column="0">
+                <widget class="QLabel" name="label_18">
+                 <property name="text">
+                  <string>Parallel C:</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="3" column="0">
+                <widget class="QLabel" name="label_26">
+                 <property name="text">
+                  <string>Series L:</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="2" column="1">
+                <widget class="SIUnitEdit" name="load_parC"/>
+               </item>
+               <item row="3" column="1">
+                <widget class="SIUnitEdit" name="load_serL"/>
                </item>
               </layout>
              </item>
@@ -470,12 +500,12 @@
                <item row="0" column="0">
                 <widget class="QLabel" name="label_35">
                  <property name="text">
-                  <string>Z0 [Ω]:</string>
+                  <string>Z0:</string>
                  </property>
                 </widget>
                </item>
                <item row="0" column="1">
-                <widget class="QLineEdit" name="through_Z0">
+                <widget class="SIUnitEdit" name="through_Z0">
                  <property name="enabled">
                   <bool>false</bool>
                  </property>
@@ -484,22 +514,22 @@
                <item row="1" column="0">
                 <widget class="QLabel" name="label_21">
                  <property name="text">
-                  <string>Offset delay [ps]:</string>
+                  <string>Delay [ps]:</string>
                  </property>
                 </widget>
                </item>
                <item row="1" column="1">
-                <widget class="QLineEdit" name="through_delay"/>
+                <widget class="SIUnitEdit" name="through_delay"/>
                </item>
                <item row="2" column="0">
                 <widget class="QLabel" name="label_22">
                  <property name="text">
-                  <string>Offset loss [GΩ/s]: </string>
+                  <string>Loss [GΩ/s]: </string>
                  </property>
                 </widget>
                </item>
                <item row="2" column="1">
-                <widget class="QLineEdit" name="through_loss"/>
+                <widget class="SIUnitEdit" name="through_loss"/>
                </item>
               </layout>
              </item>
@@ -556,7 +586,7 @@
             </widget>
            </item>
            <item row="0" column="1">
-            <widget class="QLineEdit" name="TRL_through_Z0">
+            <widget class="SIUnitEdit" name="TRL_through_Z0">
              <property name="enabled">
               <bool>false</bool>
              </property>
@@ -678,7 +708,7 @@
             </widget>
            </item>
            <item row="0" column="1">
-            <widget class="QLineEdit" name="TRL_line_delay">
+            <widget class="SIUnitEdit" name="TRL_line_delay">
              <property name="enabled">
               <bool>true</bool>
              </property>
@@ -816,15 +846,15 @@
  </widget>
  <customwidgets>
   <customwidget>
+   <class>SIUnitEdit</class>
+   <extends>QLineEdit</extends>
+   <header>CustomWidgets/siunitedit.h</header>
+  </customwidget>
+  <customwidget>
    <class>TouchstoneImport</class>
    <extends>QWidget</extends>
    <header>CustomWidgets/touchstoneimport.h</header>
    <container>1</container>
-  </customwidget>
-  <customwidget>
-   <class>SIUnitEdit</class>
-   <extends>QLineEdit</extends>
-   <header>CustomWidgets/siunitedit.h</header>
   </customwidget>
  </customwidgets>
  <tabstops>
@@ -903,10 +933,10 @@
   </connection>
  </connections>
  <buttongroups>
-  <buttongroup name="LoadType"/>
+  <buttongroup name="TRL_Rtype"/>
   <buttongroup name="ShortType"/>
+  <buttongroup name="LoadType"/>
   <buttongroup name="OpenType"/>
   <buttongroup name="ThroughType"/>
-  <buttongroup name="TRL_Rtype"/>
  </buttongroups>
 </ui>

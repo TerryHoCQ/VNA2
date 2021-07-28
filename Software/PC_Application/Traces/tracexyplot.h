@@ -12,16 +12,21 @@ public:
     TraceXYPlot(TraceModel &model, QWidget *parent = nullptr);
 
     enum class YAxisType {
-        Disabled = 0,
+        Disabled,
         // S parameter options
-        Magnitude = 1,
-        Phase = 2,
-        VSWR = 3,
+        Magnitude,
+        Phase,
+        VSWR,
+        // derived parameter options
+        SeriesR,
+        Capacitance,
+        Inductance,
+        QualityFactor,
         // TDR options
-        ImpulseReal = 4,
-        ImpulseMag = 5,
-        Step = 6,
-        Impedance = 7,
+        ImpulseReal,
+        ImpulseMag,
+        Step,
+        Impedance,
         Last,
     };
     static const std::set<YAxisType> YAxisTypes;
@@ -29,6 +34,7 @@ public:
         Frequency,
         Time,
         Distance,
+        Power,
         Last,
     };
     enum class XAxisMode {
@@ -54,6 +60,7 @@ public slots:
     void axisSetupDialog();
 
 protected:
+    virtual bool configureForTrace(Trace *t) override;
     virtual void updateContextMenu() override;
     virtual bool dropSupported(Trace *t) override;
     virtual void draw(QPainter &p) override;
@@ -62,20 +69,19 @@ private slots:
     void updateAxisTicks();
 private:
     static constexpr int AxisLabelSize = 10;
-    QString AxisTypeToName(YAxisType type);
-    QString AxisTypeToName(XAxisType type);
-    QString AxisModeToName(XAxisMode mode);
+    static QString AxisTypeToName(YAxisType type);
+    static QString AxisTypeToName(XAxisType type);
+    static QString AxisModeToName(XAxisMode mode);
     XAxisType XAxisTypeFromName(QString name);
     YAxisType YAxisTypeFromName(QString name);
     XAxisMode AxisModeFromName(QString name);
     void enableTraceAxis(Trace *t, int axis, bool enabled);
     bool supported(Trace *t) override;
     bool supported(Trace *t, YAxisType type);
-    void removeUnsupportedTraces();
     QPointF traceToCoordinate(Trace *t, unsigned int sample, YAxisType type);
     QPoint plotValueToPixel(QPointF plotValue, int Yaxis);
     QPointF pixelToPlotValue(QPoint pixel, int YAxis);
-    QPoint markerToPixel(TraceMarker *m) override;
+    QPoint markerToPixel(Marker *m) override;
     double nearestTracePoint(Trace *t, QPoint pixel, double *distance = nullptr) override;
     virtual bool xCoordinateVisible(double x);
     void traceDropped(Trace *t, QPoint position) override;

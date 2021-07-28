@@ -60,6 +60,7 @@ public:
     enum class DataType {
         Frequency,
         Time,
+        Power,
         Invalid,
     };
 
@@ -92,6 +93,9 @@ public:
     double getStepResponse(unsigned int index);
     Data getInterpolatedSample(double x);
     unsigned int numSamples();
+
+    static QString dataTypeToString(DataType type);
+    static DataType dataTypeFromString(QString s);
 
     // indicate whether this function produces time or frequency domain data
     virtual DataType outputType(DataType inputType) = 0;

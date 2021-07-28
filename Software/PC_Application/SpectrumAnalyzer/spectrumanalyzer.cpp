@@ -30,7 +30,7 @@
 #include "CustomWidgets/tilewidget.h"
 #include "CustomWidgets/siunitedit.h"
 #include <QDockWidget>
-#include "Traces/markerwidget.h"
+#include "Traces/Marker/markerwidget.h"
 #include "Tools/impedancematchdialog.h"
 #include "Calibration/calibrationtracedialog.h"
 #include "ui_main.h"
@@ -68,6 +68,12 @@ SpectrumAnalyzer::SpectrumAnalyzer(AppWindow *window)
     traceXY->enableTrace(tPort2, true);
     traceXY->setYAxis(0, TraceXYPlot::YAxisType::Magnitude, false, false, -120,0,10);
     traceXY->setYAxis(1, TraceXYPlot::YAxisType::Disabled, false, true, 0,0,1);
+
+    connect(this, &SpectrumAnalyzer::graphColorsChanged, [=](){
+        for (auto p : TracePlot::getPlots()) {
+            p->updateGraphColors();
+        }
+    });
 
     central->setPlot(traceXY);
 
@@ -232,7 +238,7 @@ SpectrumAnalyzer::SpectrumAnalyzer(AppWindow *window)
     window->addToolBar(tb_trackgen);
     toolbars.insert(tb_trackgen);
 
-    markerModel = new TraceMarkerModel(traceModel, this);
+    markerModel = new MarkerModel(traceModel, this);
 
     auto tracesDock = new QDockWidget("Traces");
     traceWidget = new TraceWidgetSA(traceModel, window);
@@ -733,7 +739,7 @@ void SpectrumAnalyzer::SetupSCPI()
         } else if(params[0] == "FLATTOP") {
             SetWindow(Window::FlatTop);
         } else {
-            return "INVALID MDOE";
+            return "INVALID WINDOW";
         }
         return "";
     }, [=](QStringList) -> QString {
@@ -959,4 +965,9 @@ void SpectrumAnalyzer::StoreSweepSettings()
     s.setValue("SADetector", settings.Detector);
     s.setValue("SAAveraging", averages);
     s.setValue("SASignalID", static_cast<bool>(settings.SignalID));
+}
+
+void SpectrumAnalyzer::updateGraphColors()
+{
+    emit graphColorsChanged();
 }

@@ -3,7 +3,7 @@
 #include "trace.h"
 #include <cmath>
 #include <QFrame>
-#include "tracemarker.h"
+#include "Marker/marker.h"
 #include "xyplotaxisdialog.h"
 #include <preferences.h>
 #include <QPainter>
@@ -77,7 +77,7 @@ void TraceXYPlot::setYAxis(int axis, TraceXYPlot::YAxisType type, bool log, bool
     YAxis[axis].rangeMin = min;
     YAxis[axis].rangeMax = max;
     YAxis[axis].rangeDiv = div;
-    removeUnsupportedTraces();
+    traceRemovalPending = true;
     updateAxisTicks();
     updateContextMenu();
     replot();
@@ -90,7 +90,7 @@ void TraceXYPlot::setXAxis(XAxisType type, XAxisMode mode, double min, double ma
     XAxis.rangeMin = min;
     XAxis.rangeMax = max;
     XAxis.rangeDiv = div;
-    removeUnsupportedTraces();
+    traceRemovalPending = true;
     updateAxisTicks();
     updateContextMenu();
     replot();
@@ -223,6 +223,32 @@ void TraceXYPlot::axisSetupDialog()
     setup->show();
 }
 
+bool TraceXYPlot::configureForTrace(Trace *t)
+{
+    switch(t->outputType()) {
+    case Trace::DataType::Frequency:
+        setXAxis(XAxisType::Frequency, XAxisMode::FitTraces, 0, 1, 0.1);
+        setYAxis(0, YAxisType::Magnitude, false, true, 0, 1, 1.0);
+        setYAxis(1, YAxisType::Phase, false, true, 0, 1, 1.0);
+        break;
+    case Trace::DataType::Time:
+        setXAxis(XAxisType::Time, XAxisMode::FitTraces, 0, 1, 0.1);
+        setYAxis(0, YAxisType::ImpulseMag, false, true, 0, 1, 1.0);
+        setYAxis(1, YAxisType::Disabled, false, true, 0, 1, 1.0);
+        break;
+    case Trace::DataType::Power:
+        setXAxis(XAxisType::Power, XAxisMode::FitTraces, 0, 1, 0.1);
+        setYAxis(0, YAxisType::Magnitude, false, true, 0, 1, 1.0);
+        setYAxis(1, YAxisType::Phase, false, true, 0, 1, 1.0);
+        break;
+    case Trace::DataType::Invalid:
+        // unable to add
+        return false;
+    }
+    traceRemovalPending = true;
+    return true;
+}
+
 void TraceXYPlot::updateContextMenu()
 {
     contextmenu->clear();
@@ -322,7 +348,7 @@ void TraceXYPlot::draw(QPainter &p)
     constexpr int yAxisDisabledSpace = 10;
     constexpr int xAxisSpace = 30;
     auto w = p.window();
-    auto pen = QPen(pref.General.graphColors.axis, 0);
+    auto pen = QPen(pref.Graphs.Color.axis, 0);
     pen.setCosmetic(true);
     p.setPen(pen);
     plotAreaLeft = YAxis[0].type == YAxisType::Disabled ? yAxisDisabledSpace : yAxisSpace;
@@ -378,14 +404,14 @@ void TraceXYPlot::draw(QPainter &p)
             p.setPen(QPen(QColor("orange")));
             QRect bounding;
             p.drawText(QRect(2, plotAreaBottom + AxisLabelSize + 5, w.width(), AxisLabelSize), 0, front, &bounding);
-            p.setPen(pref.General.graphColors.axis);
+            p.setPen(pref.Graphs.Color.axis);
             p.drawText(QRect(bounding.x() + bounding.width(), plotAreaBottom + AxisLabelSize + 5, w.width(), AxisLabelSize), 0, back);
         }
 
         for(auto t : XAxis.ticks) {
             auto xCoord = Util::Scale<double>(t, XAxis.rangeMin, XAxis.rangeMax, plotAreaLeft, plotAreaLeft + plotAreaWidth);
             auto tickValue = Unit::ToString(t, "", prefixes, significantDigits);
-            p.setPen(QPen(pref.General.graphColors.axis, 1));
+            p.setPen(QPen(pref.Graphs.Color.axis, 1));
             if(displayFullFreq) {
                 p.drawText(QRect(xCoord - 40, plotAreaBottom + 5, 80, AxisLabelSize), Qt::AlignHCenter, tickValue);
             } else {
@@ -400,11 +426,11 @@ void TraceXYPlot::draw(QPainter &p)
                 p.drawText(QRect(xCoord - 40, plotAreaBottom + 5, 80, AxisLabelSize), Qt::AlignHCenter, tickValue, &bounding);
                 p.setPen(QPen(QColor("orange")));
                 p.drawText(QRect(0, plotAreaBottom + 5, bounding.x() - 1, AxisLabelSize), Qt::AlignRight, "..");
-                p.setPen(QPen(pref.General.graphColors.axis, 1));
+                p.setPen(QPen(pref.Graphs.Color.axis, 1));
             }
             p.drawLine(xCoord, plotAreaBottom, xCoord, plotAreaBottom + 2);
             if(xCoord != plotAreaLeft && xCoord != plotAreaLeft + plotAreaWidth) {
-                p.setPen(QPen(pref.General.graphColors.divisions, 0.5, Qt::DashLine));
+                p.setPen(QPen(pref.Graphs.Color.divisions, 0.5, Qt::DashLine));
                 p.drawLine(xCoord, 0, xCoord, plotAreaBottom);
             }
         }
@@ -415,7 +441,7 @@ void TraceXYPlot::draw(QPainter &p)
             continue;
         }
         QString labelY = AxisTypeToName(YAxis[i].type);
-        p.setPen(QPen(pref.General.graphColors.axis, 1));
+        p.setPen(QPen(pref.Graphs.Color.axis, 1));
         auto xStart = i == 0 ? 0 : w.width() - AxisLabelSize * 1.5;
         p.save();
         p.translate(xStart, w.height()-xAxisSpace);
@@ -436,7 +462,7 @@ void TraceXYPlot::draw(QPainter &p)
             int significantDigits = floor(log10(max)) - floor(log10(step)) + 1;
             for(auto t : YAxis[i].ticks) {
                 auto yCoord = Util::Scale<double>(t, YAxis[i].rangeMax, YAxis[i].rangeMin, 0, w.height() - xAxisSpace);
-                p.setPen(QPen(pref.General.graphColors.axis, 1));
+                p.setPen(QPen(pref.Graphs.Color.axis, 1));
                 // draw tickmark on axis
                 auto tickStart = i == 0 ? plotAreaLeft : plotAreaLeft + plotAreaWidth;
                 auto tickLen = i == 0 ? -2 : 2;
@@ -455,7 +481,7 @@ void TraceXYPlot::draw(QPainter &p)
                 }
                 if(i == 0) {
                     // only draw tick lines for primary axis
-                    p.setPen(QPen(pref.General.graphColors.divisions, 0.5, Qt::DashLine));
+                    p.setPen(QPen(pref.Graphs.Color.divisions, 0.5, Qt::DashLine));
                     p.drawLine(plotAreaLeft, yCoord, plotAreaLeft + plotAreaWidth, yCoord);
                 }
             }
@@ -498,20 +524,7 @@ void TraceXYPlot::draw(QPainter &p)
                 // only draw markers on primary YAxis and if the trace has at least one point
                 auto markers = t->getMarkers();
                 for(auto m : markers) {
-//                    if(m->isTimeDomain() != (XAxis.type != XAxisType::Frequency)) {
-//                        // wrong domain, skip this marker
-//                        continue;
-//                    }
-                    double xPosition;
-//                    if(m->isTimeDomain()) {
-//                        if(XAxis.type == XAxisType::Distance) {
-//                            xPosition = m->getTimeData().distance;
-//                        } else {
-//                            xPosition = m->getTimeData().time;
-//                        }
-//                    } else {
-                        xPosition = m->getPosition();
-//                    }
+                    double xPosition = m->getPosition();
                     if (xPosition < XAxis.rangeMin || xPosition > XAxis.rangeMax) {
                         // marker not in graph range
                         continue;
@@ -711,9 +724,10 @@ void TraceXYPlot::updateAxisTicks()
 QString TraceXYPlot::AxisTypeToName(TraceXYPlot::XAxisType type)
 {
     switch(type) {
-    case XAxisType::Frequency: return "Frequency"; break;
-    case XAxisType::Time: return "Time"; break;
-    case XAxisType::Distance: return "Distance"; break;
+    case XAxisType::Frequency: return "Frequency";
+    case XAxisType::Time: return "Time";
+    case XAxisType::Distance: return "Distance";
+    case XAxisType::Power: return "Power";
     default: return "Unknown";
     }
 }
@@ -764,13 +778,18 @@ TraceXYPlot::XAxisMode TraceXYPlot::AxisModeFromName(QString name)
 QString TraceXYPlot::AxisTypeToName(TraceXYPlot::YAxisType type)
 {
     switch(type) {
-    case YAxisType::Magnitude: return "Magnitude"; break;
-    case YAxisType::Phase: return "Phase"; break;
-    case YAxisType::VSWR: return "VSWR"; break;
-    case YAxisType::ImpulseReal: return "Impulse Response (Real)"; break;
-    case YAxisType::ImpulseMag: return "Impulse Response (Magnitude)"; break;
-    case YAxisType::Step: return "Step Response"; break;
-    case YAxisType::Impedance: return "Impedance"; break;
+    case YAxisType::Disabled: return "Disabled";
+    case YAxisType::Magnitude: return "Magnitude";
+    case YAxisType::Phase: return "Phase";
+    case YAxisType::VSWR: return "VSWR";
+    case YAxisType::SeriesR: return "Resistance";
+    case YAxisType::Capacitance: return "Capacitance";
+    case YAxisType::Inductance: return "Inductance";
+    case YAxisType::QualityFactor: return "Quality Factor";
+    case YAxisType::ImpulseReal: return "Impulse Response (Real)";
+    case YAxisType::ImpulseMag: return "Impulse Response (Magnitude)";
+    case YAxisType::Step: return "Step Response";
+    case YAxisType::Impedance: return "Impedance";
     default: return "Unknown";
     }
 }
@@ -819,6 +838,11 @@ bool TraceXYPlot::supported(Trace *t, TraceXYPlot::YAxisType type)
             return false;
         }
         break;
+    case XAxisType::Power:
+        if(t->outputType() != Trace::DataType::Power) {
+            return false;
+        }
+        break;
     default:
         break;
     }
@@ -827,6 +851,10 @@ bool TraceXYPlot::supported(Trace *t, TraceXYPlot::YAxisType type)
     case YAxisType::Disabled:
         return false;
     case YAxisType::VSWR:
+    case YAxisType::SeriesR:
+    case YAxisType::Capacitance:
+    case YAxisType::Inductance:
+    case YAxisType::QualityFactor:
         if(!t->isReflection()) {
             return false;
         }
@@ -835,18 +863,6 @@ bool TraceXYPlot::supported(Trace *t, TraceXYPlot::YAxisType type)
         break;
     }
     return true;
-}
-
-void TraceXYPlot::removeUnsupportedTraces()
-{
-    for(unsigned int i=0;i<2;i++) {
-        auto set_copy = tracesAxis[i];
-        for(auto t : set_copy) {
-            if(!supported(t, YAxis[i].type)) {
-                enableTraceAxis(t, i, false);
-            }
-        }
-    }
 }
 
 QPointF TraceXYPlot::traceToCoordinate(Trace *t, unsigned int sample, TraceXYPlot::YAxisType type)
@@ -863,29 +879,39 @@ QPointF TraceXYPlot::traceToCoordinate(Trace *t, unsigned int sample, TraceXYPlo
     }
     switch(type) {
     case YAxisType::Magnitude:
-        ret.setY(Unit::dB(data.y));
+        ret.setY(Util::SparamTodB(data.y));
         break;
     case YAxisType::Phase:
-        ret.setY(arg(data.y) * 180.0 / M_PI);
+        ret.setY(Util::SparamToDegree(data.y));
         break;
     case YAxisType::VSWR:
-        if(abs(data.y) < 1.0) {
-            ret.setY((1+abs(data.y)) / (1-abs(data.y)));
-        }
+        ret.setY(Util::SparamToVSWR(data.y));
+        break;
+    case YAxisType::SeriesR:
+        ret.setY(Util::SparamToResistance(data.y));
+        break;
+    case YAxisType::Capacitance:
+        ret.setY(Util::SparamToCapacitance(data.y, data.x));
+        break;
+    case YAxisType::Inductance:
+        ret.setY(Util::SparamToInductance(data.y, data.x));
+        break;
+    case YAxisType::QualityFactor:
+        ret.setY(Util::SparamToQualityFactor(data.y));
         break;
     case YAxisType::ImpulseReal:
         ret.setY(real(data.y));
         break;
     case YAxisType::ImpulseMag:
-        ret.setY(Unit::dB(data.y));
+        ret.setY(Util::SparamTodB(data.y));
         break;
     case YAxisType::Step:
-        ret.setY(t->sample(sample, Trace::SampleType::TimeStep).y.real());
+        ret.setY(t->sample(sample, true).y.real());
         break;
     case YAxisType::Impedance: {
-        double step = t->sample(sample, Trace::SampleType::TimeStep).y.real();
+        double step = t->sample(sample, true).y.real();
         if(abs(step) < 1.0) {
-            ret.setY(50 * (1.0+step) / (1.0-step));
+            ret.setY(Util::SparamToImpedance(step).real());
         }
     }
         break;
@@ -913,7 +939,7 @@ QPointF TraceXYPlot::pixelToPlotValue(QPoint pixel, int Yaxis)
     return p;
 }
 
-QPoint TraceXYPlot::markerToPixel(TraceMarker *m)
+QPoint TraceXYPlot::markerToPixel(Marker *m)
 {
     auto t = m->getTrace();
     QPointF plotPoint = traceToCoordinate(t, t->index(m->getPosition()), YAxis[0].type);
@@ -962,29 +988,18 @@ bool TraceXYPlot::xCoordinateVisible(double x)
 
 void TraceXYPlot::traceDropped(Trace *t, QPoint position)
 {
-    if(t->outputType() == Trace::DataType::Frequency && XAxis.type != XAxisType::Frequency) {
-        // needs to switch to frequency domain graph
-        if(!InformationBox::AskQuestion("X Axis Domain Change", "You dropped a frequency domain trace but the graph is still set up for the time domain."
-                                    " Do you want to remove all traces and change the graph to frequency domain?", true, "DomainChangeRequest")) {
+    if(!supported(t)) {
+        // needs to switch to a different domain for the graph
+        if(!InformationBox::AskQuestion("X Axis Domain Change", "You dropped a trace that is not supported with the currently selected X axis domain."
+                                    " Do you want to remove all traces and change the graph to the correct domain?", true, "DomainChangeRequest")) {
             // user declined to change domain, to not add trace
             return;
         }
-        setXAxis(XAxisType::Frequency, XAxisMode::FitTraces, 0, 1, 0.1);
-        setYAxis(0, YAxisType::Magnitude, false, true, 0, 1, 1.0);
-        setYAxis(1, YAxisType::Phase, false, true, 0, 1, 1.0);
-    }
-    if(t->outputType() != Trace::DataType::Frequency && XAxis.type == XAxisType::Frequency) {
-        // needs to switch to time domain graph
-        if(!InformationBox::AskQuestion("X Axis Domain Change", "You dropped a time domain trace but the graph is still set up for the frequency domain."
-                                    " Do you want to remove all traces and change the graph to time domain?", true, "DomainChangeRequest")) {
-            // user declined to change domain, to not add trace
+        if(!configureForTrace(t)) {
+            // failed to configure
             return;
         }
-        setXAxis(XAxisType::Time, XAxisMode::FitTraces, 0, 1, 0.1);
-        setYAxis(0, YAxisType::ImpulseMag, false, true, 0, 1, 1.0);
-        setYAxis(1, YAxisType::Disabled, false, true, 0, 1, 1.0);
     }
-
     if(YAxis[0].type == YAxisType::Disabled && YAxis[1].type == YAxisType::Disabled) {
         // no Y axis enabled, unable to drop
         return;
@@ -1017,7 +1032,7 @@ QString TraceXYPlot::mouseText(QPoint pos)
         QPointF coords[2];
         coords[0] = pixelToPlotValue(pos, 0);
         coords[1] = pixelToPlotValue(pos, 1);
-        int significantDigits = floor(log10(XAxis.rangeMax)) - floor(log10((XAxis.rangeMax - XAxis.rangeMin) / 1000.0)) + 1;
+        int significantDigits = floor(log10(abs(XAxis.rangeMax))) - floor(log10((abs(XAxis.rangeMax - XAxis.rangeMin)) / 1000.0)) + 1;
         ret += Unit::ToString(coords[0].x(), AxisUnit(XAxis.type), "fpnum kMG", significantDigits) + "\n";
         for(int i=0;i<2;i++) {
             if(YAxis[i].type != YAxisType::Disabled) {
@@ -1034,23 +1049,24 @@ QString TraceXYPlot::mouseText(QPoint pos)
 QString TraceXYPlot::AxisUnit(TraceXYPlot::YAxisType type)
 {
     switch(type) {
-    case TraceXYPlot::YAxisType::Magnitude: return "db"; break;
-    case TraceXYPlot::YAxisType::Phase: return "°"; break;
-    case TraceXYPlot::YAxisType::VSWR: return ""; break;
-    case TraceXYPlot::YAxisType::ImpulseReal: return ""; break;
-    case TraceXYPlot::YAxisType::ImpulseMag: return "db"; break;
-    case TraceXYPlot::YAxisType::Step: return ""; break;
-    case TraceXYPlot::YAxisType::Impedance: return "Ohm"; break;
-    default: return ""; break;
+    case TraceXYPlot::YAxisType::Magnitude: return "db";
+    case TraceXYPlot::YAxisType::Phase: return "°";
+    case TraceXYPlot::YAxisType::VSWR: return "";
+    case TraceXYPlot::YAxisType::ImpulseReal: return "";
+    case TraceXYPlot::YAxisType::ImpulseMag: return "db";
+    case TraceXYPlot::YAxisType::Step: return "";
+    case TraceXYPlot::YAxisType::Impedance: return "Ohm";
+    default: return "";
     }
 }
 
 QString TraceXYPlot::AxisUnit(TraceXYPlot::XAxisType type)
 {
     switch(type) {
-    case XAxisType::Frequency: return "Hz"; break;
-    case XAxisType::Time: return "s"; break;
-    case XAxisType::Distance: return "m"; break;
-    default: return ""; break;
+    case XAxisType::Frequency: return "Hz";
+    case XAxisType::Time: return "s";
+    case XAxisType::Distance: return "m";
+    case XAxisType::Power: return "dBm";
+    default: return "";
     }
 }

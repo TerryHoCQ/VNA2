@@ -11,7 +11,7 @@
 #include "Device/device.h"
 #include "Math/tracemath.h"
 
-class TraceMarker;
+class Marker;
 
 class Trace : public TraceMath
 {
@@ -42,8 +42,7 @@ public:
 
 
     void clear();
-    void addData(const Data& d);
-    void addData(const Data& d, const Protocol::SweepSettings& s);
+    void addData(const Data& d, DataType domain);
     void addData(const Data& d, const Protocol::SpectrumAnalyzerSettings& s);
     void setName(QString name);
     void setVelocityFactor(double v);
@@ -67,7 +66,7 @@ public:
     unsigned int size() const;
     double minX();
     double maxX();
-    double findExtremumFreq(bool max);
+    double findExtremum(bool max);
     /* Searches for peaks in the trace data and returns the peak frequencies in ascending order.
      * Up to maxPeaks will be returned, with higher level peaks taking priority over lower level peaks.
      * Only peaks with at least minLevel will be considered.
@@ -80,15 +79,15 @@ public:
         TimeStep,
     };
 
-    Data sample(unsigned int index, SampleType type = SampleType::Frequency) const;
-    // returns a (possibly interpolated sample) at a specified frequency/time
+    Data sample(unsigned int index, bool getStepResponse = false) const;
+    // returns a (possibly interpolated sample) at a specified frequency/time/power
     Data interpolatedSample(double x);
     QString getFilename() const;
     unsigned int getFileParameter() const;
     /* Returns the noise in dbm/Hz for spectrum analyzer measurements. May return NaN if calculation not possible */
     double getNoise(double frequency);
     int index(double x);
-    std::set<TraceMarker *> getMarkers() const;
+    std::set<Marker *> getMarkers() const;
     void setCalibration(bool value);
     void setReflection(bool value);
 
@@ -146,8 +145,8 @@ public:
 public slots:
     void setVisible(bool visible);
     void setColor(QColor color);
-    void addMarker(TraceMarker *m);
-    void removeMarker(TraceMarker *m);
+    void addMarker(Marker *m);
+    void removeMarker(Marker *m);
 
 signals:
     void cleared(Trace *t);
@@ -158,9 +157,9 @@ signals:
     void nameChanged();
     void pauseChanged();
     void colorChanged(Trace *t);
-    void markerAdded(TraceMarker *m);
-    void markerRemoved(TraceMarker *m);
-    void markerFormatChanged(TraceMarker *m);
+    void markerAdded(Marker *m);
+    void markerRemoved(Marker *m);
+    void markerFormatChanged(Marker *m);
 
 private:
     QString _name;
@@ -173,13 +172,12 @@ private:
     bool paused;
     bool createdFromFile;
     bool calibration;
-    bool timeDomain;
+    DataType domain;
     QString filename;
-    unsigned int fileParemeter;
-    std::set<TraceMarker*> markers;
+    unsigned int fileParameter;
+    std::set<Marker*> markers;
     struct {
         union {
-            Protocol::SweepSettings VNA;
             Protocol::SpectrumAnalyzerSettings SA;
         };
         bool valid;

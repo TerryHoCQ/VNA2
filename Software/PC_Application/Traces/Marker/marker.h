@@ -3,20 +3,21 @@
 
 #include <QPixmap>
 #include <QObject>
-#include "trace.h"
+#include "../trace.h"
 #include <QMenu>
 #include <QComboBox>
 #include "CustomWidgets/siunitedit.h"
 #include "savable.h"
 
-class TraceMarkerModel;
+class MarkerModel;
+class MarkerGroup;
 
-class TraceMarker : public QObject, public Savable
+class Marker : public QObject, public Savable
 {
     Q_OBJECT;
 public:
-    TraceMarker(TraceMarkerModel *model, int number = 1, TraceMarker *parent = nullptr, QString descr = QString());
-    ~TraceMarker();
+    Marker(MarkerModel *model, int number = 1, Marker *parent = nullptr, QString descr = QString());
+    ~Marker();
     void assignTrace(Trace *t);
     Trace* trace();
 
@@ -25,6 +26,11 @@ public:
         dBAngle,
         RealImag,
         Impedance,
+        VSWR,
+        SeriesR,
+        Capacitance,
+        Inductance,
+        QualityFactor,
         // Noise marker parameters
         Noise,
         PhaseNoise,
@@ -36,6 +42,8 @@ public:
         TOI,                    // third order intercept point
         AvgTone,                // average level of tone
         AvgModulationProduct,   // average level of modulation products
+        // compression parameters
+        P1dB,                   // power level at 1dB compression
         // keep last at end
         Last,
     };
@@ -54,7 +62,7 @@ public:
     double getPosition() const;
     std::complex<double> getData() const;
     bool isMovable();
-    bool isTimeDomain();
+    Trace::DataType getDomain();
 
     QPixmap& getSymbol();
 
@@ -75,6 +83,7 @@ public:
         Bandpass,
         TOI,
         PhaseNoise,
+        P1dB,
         // keep last at end
         Last,
     };
@@ -88,10 +97,10 @@ public:
 
     // Updates marker position and data on automatic markers. Should be called whenever the tracedata is complete
     void update();
-    TraceMarker *getParent() const;
-    const std::vector<TraceMarker *>& getHelperMarkers() const;
-    TraceMarker *helperMarker(unsigned int i);
-    void assignDeltaMarker(TraceMarker *m);
+    Marker *getParent() const;
+    const std::vector<Marker *>& getHelperMarkers() const;
+    Marker *helperMarker(unsigned int i);
+    void assignDeltaMarker(Marker *m);
     QString getSuffix() const;
 
     virtual nlohmann::json toJSON() override;
@@ -106,18 +115,23 @@ public:
 
     std::set<Format> getGraphDisplayFormats() const;
 
+    MarkerGroup *getGroup() const;
+    void setGroup(MarkerGroup *value);
+
 public slots:
     void setPosition(double freq);
+    void updateContextmenu();
 signals:
-    void deleted(TraceMarker *m);
-    void dataChanged(TraceMarker *m);
-    void symbolChanged(TraceMarker *m);
-    void typeChanged(TraceMarker *m);
-    void assignedDeltaChanged(TraceMarker *m);
-    void traceChanged(TraceMarker *m);
-    void beginRemoveHelperMarkers(TraceMarker *m);
-    void endRemoveHelperMarkers(TraceMarker *m);
-    void dataFormatChanged(TraceMarker *m);
+    void positionChanged(double pos);
+    void deleted(Marker *m);
+    void dataChanged(Marker *m);
+    void symbolChanged(Marker *m);
+    void typeChanged(Marker *m);
+    void assignedDeltaChanged(Marker *m);
+    void traceChanged(Marker *m);
+    void beginRemoveHelperMarkers(Marker *m);
+    void endRemoveHelperMarkers(Marker *m);
+    void dataFormatChanged(Marker *m);
 
 private slots:
     void parentTraceDeleted(Trace *t);
@@ -125,10 +139,10 @@ private slots:
     void updateSymbol();
     void checkDeltaMarker();
     void deltaDeleted();
-    void updateContextmenu();
+    void traceTypeChanged();
 signals:
     void rawDataChanged();
-    void domainChanged();
+    void domainChanged(Marker *m);
 private:
     std::set<Type> getSupportedTypes();
     static QString typeToString(Type t) {
@@ -143,12 +157,13 @@ private:
         case Type::Bandpass: return "Bandpass";
         case Type::TOI: return "TOI/IP3";
         case Type::PhaseNoise: return "Phase noise";
+        case Type::P1dB: return "1dB compression";
         default: return QString();
         }
     }
     void constrainPosition();
     void constrainFormat();
-    TraceMarker *bestDeltaCandidate();
+    Marker *bestDeltaCandidate();
     void deleteHelperMarkers();
     void setType(Type t);
     double toDecibel();
@@ -156,7 +171,7 @@ private:
 
     void setTableFormat(Format f);
 
-    TraceMarkerModel *model;
+    MarkerModel *model;
     Trace *parentTrace;
     double position;
     int number;
@@ -170,9 +185,9 @@ private:
 
     QMenu contextmenu;
 
-    TraceMarker *delta;
-    std::vector<TraceMarker*> helperMarkers;
-    TraceMarker *parent;
+    Marker *delta;
+    std::vector<Marker*> helperMarkers;
+    Marker *parent;
     // settings for the different marker types
     double cutoffAmplitude;
     double peakThreshold;
@@ -180,6 +195,8 @@ private:
 
     Format formatTable;
     std::set<Format> formatGraph;
+
+    MarkerGroup *group;
 };
 
 #endif // TRACEMARKER_H

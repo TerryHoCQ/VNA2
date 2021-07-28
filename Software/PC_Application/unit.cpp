@@ -53,6 +53,9 @@ QString Unit::ToString(double value, QString unit, QString prefixes, int precisi
         value /= SIPrefixToFactor(prefixes[prefixIndex].toLatin1());
         stringstream ss;
         ss << std::fixed;
+        if(precision < 0) {
+            precision = 0;
+        }
         if(preDotDigits >= 0) {
             if(precision - preDotDigits < 0) {
                 ss << std::setprecision(0);
@@ -86,14 +89,4 @@ double Unit::SIPrefixToFactor(char prefix)
     case 'P': return 1e15; break;
     default: return 1e0; break;
     }
-}
-
-double Unit::dB(double d)
-{
-    return 20*log10(d);
-}
-
-double Unit::dB(std::complex<double> d)
-{
-    return dB(abs(d));
 }

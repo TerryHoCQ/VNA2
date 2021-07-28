@@ -10,6 +10,17 @@ XYplotAxisDialog::XYplotAxisDialog(TraceXYPlot *plot) :
     plot(plot)
 {
     ui->setupUi(this);
+    ui->Y1type->clear();
+    ui->Y2type->clear();
+
+    for(int i=0;i<(int) TraceXYPlot::YAxisType::Last;i++) {
+        ui->Y1type->addItem(TraceXYPlot::AxisTypeToName((TraceXYPlot::YAxisType) i));
+        ui->Y2type->addItem(TraceXYPlot::AxisTypeToName((TraceXYPlot::YAxisType) i));
+    }
+
+    for(int i=0;i<(int) TraceXYPlot::XAxisType::Last;i++) {
+        ui->XType->addItem(TraceXYPlot::AxisTypeToName((TraceXYPlot::XAxisType) i));
+    }
 
     // Setup GUI connections
     connect(ui->Y1type, qOverload<int>(&QComboBox::currentIndexChanged), [this](int index) {
@@ -69,7 +80,6 @@ XYplotAxisDialog::XYplotAxisDialog(TraceXYPlot *plot) :
     connect(ui->XType, qOverload<int>(&QComboBox::currentIndexChanged), this, &XYplotAxisDialog::XAxisTypeChanged);
 
     // Fill initial values
-    // assume same order in YAxisType enum as in ComboBox items
     ui->Y1type->setCurrentIndex((int) plot->YAxis[0].type);
     if(plot->YAxis[0].log) {
         ui->Y1log->setChecked(true);
@@ -172,9 +182,14 @@ std::set<TraceXYPlot::YAxisType> XYplotAxisDialog::supportedYAxis(TraceXYPlot::X
     set<TraceXYPlot::YAxisType> ret = {TraceXYPlot::YAxisType::Disabled};
     switch(type) {
     case TraceXYPlot::XAxisType::Frequency:
+    case TraceXYPlot::XAxisType::Power:
         ret.insert(TraceXYPlot::YAxisType::Magnitude);
         ret.insert(TraceXYPlot::YAxisType::Phase);
         ret.insert(TraceXYPlot::YAxisType::VSWR);
+        ret.insert(TraceXYPlot::YAxisType::SeriesR);
+        ret.insert(TraceXYPlot::YAxisType::Capacitance);
+        ret.insert(TraceXYPlot::YAxisType::Inductance);
+        ret.insert(TraceXYPlot::YAxisType::QualityFactor);
         break;
     case TraceXYPlot::XAxisType::Time:
     case TraceXYPlot::XAxisType::Distance:

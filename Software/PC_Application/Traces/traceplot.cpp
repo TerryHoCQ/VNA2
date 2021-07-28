@@ -1,11 +1,11 @@
 #include "traceplot.h"
-#include "tracemarker.h"
+#include "Marker/marker.h"
 #include "preferences.h"
 #include <QPainter>
 #include <QMimeData>
 #include <QDebug>
 #include "unit.h"
-#include "tracemarkermodel.h"
+#include "Marker/markermodel.h"
 
 std::set<TracePlot*> TracePlot::plots;
 
@@ -15,6 +15,7 @@ TracePlot::TracePlot(TraceModel &model, QWidget *parent)
     : QWidget(parent),
       model(model),
       selectedMarker(nullptr),
+      traceRemovalPending(false),
       dropPending(false),
       dropTrace(nullptr)
 {
@@ -96,6 +97,17 @@ void TracePlot::initializeTraceInfo()
     connect(&model, &TraceModel::traceAdded, this, &TracePlot::newTraceAvailable);
 }
 
+std::vector<Trace *> TracePlot::activeTraces()
+{
+    std::vector<Trace*> ret;
+    for(auto t : traces) {
+        if(t.second) {
+            ret.push_back(t.first);
+        }
+    }
+    return ret;
+}
+
 void TracePlot::contextMenuEvent(QContextMenuEvent *event)
 {
     auto m = markerAtPosition(event->pos());
@@ -117,13 +129,25 @@ void TracePlot::contextMenuEvent(QContextMenuEvent *event)
 
 void TracePlot::paintEvent(QPaintEvent *event)
 {
+    if(traceRemovalPending) {
+        for(auto t : traces) {
+            if(!t.second) {
+                // trace already disabled
+            }
+            if(!supported(t.first)) {
+                enableTrace(t.first, false);
+            }
+        }
+        traceRemovalPending = false;
+    }
+
     Q_UNUSED(event)
     auto pref = Preferences::getInstance();
     QPainter p(this);
 //    p.setRenderHint(QPainter::Antialiasing);
     // fill background
-    p.setBackground(QBrush(pref.General.graphColors.background));
-    p.fillRect(0, 0, width(), height(), QBrush(pref.General.graphColors.background));
+    p.setBackground(QBrush(pref.Graphs.Color.background));
+    p.fillRect(0, 0, width(), height(), QBrush(pref.Graphs.Color.background));
 
     // show names of active traces and marker data (if enabled)
     bool hasMarkerData = false;
@@ -229,12 +253,12 @@ void TracePlot::leaveEvent(QEvent *event)
     selectedMarker = nullptr;
 }
 
-TraceMarker *TracePlot::markerAtPosition(QPoint p, bool onlyMovable)
+Marker *TracePlot::markerAtPosition(QPoint p, bool onlyMovable)
 {
     auto clickPoint = p - QPoint(marginLeft, marginTop);
     // check if click was near a marker
     unsigned int closestDistance = numeric_limits<unsigned int>::max();
-    TraceMarker *closestMarker = nullptr;
+    Marker *closestMarker = nullptr;
     for(auto t : traces) {
         if(!t.second) {
             // this trace is disabled, skip
@@ -374,20 +398,45 @@ void TracePlot::checkIfStillSupported(Trace *t)
 {
     if(!supported(t)) {
         // something with this trace changed and it can no longer be displayed on this graph
-        enableTrace(t, false);
+        // behavior depends on preferences
+        switch(Preferences::getInstance().Graphs.domainChangeBehavior) {
+        case GraphDomainChangeBehavior::RemoveChangedTraces:
+            // simply remove the changed trace
+            enableTrace(t, false);
+            break;
+        case GraphDomainChangeBehavior::AdjustGrahpsIfOnlyTrace:
+            // remove trace if other traces are present, otherwise try to adjust graph
+            if(activeTraces().size() > 1) {
+                enableTrace(t, false);
+                break;
+            }
+            [[fallthrough]];
+        case GraphDomainChangeBehavior::AdjustGraphs:
+            // attempt to configure the graph for the changed trace, remove only if this fails
+            if(!configureForTrace(t)) {
+                enableTrace(t, false);
+            }
+            break;
+        }
+
     }
 }
 
-void TracePlot::markerAdded(TraceMarker *m)
+void TracePlot::markerAdded(Marker *m)
 {
-    connect(m, &TraceMarker::dataChanged, this, &TracePlot::triggerReplot);
-    connect(m, &TraceMarker::symbolChanged, this, &TracePlot::triggerReplot);
+    connect(m, &Marker::dataChanged, this, &TracePlot::triggerReplot);
+    connect(m, &Marker::symbolChanged, this, &TracePlot::triggerReplot);
     triggerReplot();
 }
 
-void TracePlot::markerRemoved(TraceMarker *m)
+void TracePlot::markerRemoved(Marker *m)
 {
-    disconnect(m, &TraceMarker::dataChanged, this, &TracePlot::triggerReplot);
-    disconnect(m, &TraceMarker::symbolChanged, this, &TracePlot::triggerReplot);
+    disconnect(m, &Marker::dataChanged, this, &TracePlot::triggerReplot);
+    disconnect(m, &Marker::symbolChanged, this, &TracePlot::triggerReplot);
     triggerReplot();
+}
+
+void TracePlot::updateGraphColors()
+{
+    replot();
 }

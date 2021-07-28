@@ -18,6 +18,7 @@ public:
     virtual void fromJSON(nlohmann::json j) override;
 public slots:
     void axisSetupDialog();
+
 protected:
     static constexpr double ReferenceImpedance = 50.0;
     static constexpr double screenUsage = 0.9;
@@ -25,7 +26,7 @@ protected:
 
     QPoint dataToPixel(Trace::Data d);
     std::complex<double> pixelToData(QPoint p);
-    QPoint markerToPixel(TraceMarker *m) override;
+    QPoint markerToPixel(Marker *m) override;
     double nearestTracePoint(Trace *t, QPoint pixel, double *distance = nullptr) override;
     virtual bool xCoordinateVisible(double x);
 

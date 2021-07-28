@@ -28,6 +28,9 @@ public:
 
     static std::set<TracePlot *> getPlots();
 
+public slots:
+    void updateGraphColors();
+
 signals:
     void doubleClicked(QWidget *w);
     void deleted(TracePlot*);
@@ -36,6 +39,9 @@ protected:
     static constexpr int MinUpdateInterval = 100;
     // need to be called in derived class constructor
     void initializeTraceInfo();
+    std::vector<Trace*> activeTraces();
+    // changes the graph settings to make it possible to display a specific trace. The trace is not aded yet
+    virtual bool configureForTrace(Trace *t) { Q_UNUSED(t) return false; }; // default implementation fails for all traces
     void contextMenuEvent(QContextMenuEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
     virtual void updateContextMenu(){};
@@ -50,14 +56,14 @@ protected:
     bool markedForDeletion;
     static std::set<TracePlot*> plots;
 
-    virtual QPoint markerToPixel(TraceMarker *m) = 0;
+    virtual QPoint markerToPixel(Marker *m) = 0;
     virtual double nearestTracePoint(Trace *t, QPoint pixel, double *distance = nullptr) = 0;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void leaveEvent(QEvent *event) override;
 
-    TraceMarker *markerAtPosition(QPoint p, bool onlyMovable = false);
+    Marker *markerAtPosition(QPoint p, bool onlyMovable = false);
 
     void createMarkerAtPosition(QPoint p);
 
@@ -74,8 +80,8 @@ protected slots:
     void traceDeleted(Trace *t);
     void triggerReplot();
     void checkIfStillSupported(Trace *t);
-    virtual void markerAdded(TraceMarker *m);
-    virtual void markerRemoved(TraceMarker *m);
+    virtual void markerAdded(Marker *m);
+    virtual void markerRemoved(Marker *m);
     virtual bool xCoordinateVisible(double x) = 0;
 protected:
     static constexpr unsigned int marginTop = 20;
@@ -87,7 +93,10 @@ protected:
 
     double sweep_fmin, sweep_fmax;
     TraceModel &model;
-    TraceMarker *selectedMarker;
+    Marker *selectedMarker;
+
+    // graph settings have been changed, check and possibly remove incompatible traces before next paint event
+    bool traceRemovalPending;
 
     bool dropPending;
     QPoint dropPosition;

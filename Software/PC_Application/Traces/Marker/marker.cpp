@@ -1,20 +1,22 @@
-﻿#include "tracemarker.h"
+﻿#include "marker.h"
 #include <QPainter>
 #include "CustomWidgets/siunitedit.h"
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QSpinBox>
 #include <QDebug>
-#include "tracemarkermodel.h"
+#include "markermodel.h"
 #include "unit.h"
 #include <QMenu>
 #include <QActionGroup>
 #include <QApplication>
 #include "preferences.h"
+#include "markergroup.h"
+#include "Util/util.h"
 
 using namespace std;
 
-TraceMarker::TraceMarker(TraceMarkerModel *model, int number, TraceMarker *parent, QString descr)
+Marker::Marker(MarkerModel *model, int number, Marker *parent, QString descr)
     : editingFrequency(false),
       model(model),
       parentTrace(nullptr),
@@ -29,14 +31,15 @@ TraceMarker::TraceMarker(TraceMarkerModel *model, int number, TraceMarker *paren
       cutoffAmplitude(-3.0),
       peakThreshold(-40.0),
       offset(10000),
-      formatTable(Format::dBAngle)
+      formatTable(Format::dBAngle),
+      group(nullptr)
 {
-    connect(this, &TraceMarker::traceChanged, this, &TraceMarker::updateContextmenu);
-    connect(this, &TraceMarker::typeChanged, this, &TraceMarker::updateContextmenu);
+    connect(this, &Marker::traceChanged, this, &Marker::updateContextmenu);
+    connect(this, &Marker::typeChanged, this, &Marker::updateContextmenu);
     updateContextmenu();
 }
 
-TraceMarker::~TraceMarker()
+Marker::~Marker()
 {
     if(parentTrace) {
         parentTrace->removeMarker(this);
@@ -45,7 +48,7 @@ TraceMarker::~TraceMarker()
     emit deleted(this);
 }
 
-void TraceMarker::assignTrace(Trace *t)
+void Marker::assignTrace(Trace *t)
 {
     bool firstAssignment = false;
     if(parentTrace) {
@@ -64,11 +67,11 @@ void TraceMarker::assignTrace(Trace *t)
         setType(type);
     }
 
-    connect(parentTrace, &Trace::deleted, this, &TraceMarker::parentTraceDeleted);
-    connect(parentTrace, &Trace::dataChanged, this, &TraceMarker::traceDataChanged);
-    connect(parentTrace, &Trace::colorChanged, this, &TraceMarker::updateSymbol);
-    connect(parentTrace, &Trace::typeChanged, this, &TraceMarker::domainChanged);
-    connect(parentTrace, &Trace::typeChanged, this, &TraceMarker::checkDeltaMarker);
+    connect(parentTrace, &Trace::deleted, this, &Marker::parentTraceDeleted);
+    connect(parentTrace, &Trace::dataChanged, this, &Marker::traceDataChanged);
+    connect(parentTrace, &Trace::colorChanged, this, &Marker::updateSymbol);
+    connect(parentTrace, &Trace::typeChanged, this, &Marker::traceTypeChanged);
+    connect(parentTrace, &Trace::typeChanged, this, &Marker::checkDeltaMarker);
     constrainPosition();
     updateSymbol();
     parentTrace->addMarker(this);
@@ -80,8 +83,8 @@ void TraceMarker::assignTrace(Trace *t)
         // Marker was just created and this is the first assignment to a trace.
         // Use display format on graph from preferences
         auto p = Preferences::getInstance();
-        if(p.General.markerDefault.showDataOnGraphs) {
-            if(p.General.markerDefault.showAllData) {
+        if(p.Graphs.markerBehavior.showDataOnGraphs) {
+            if(p.Graphs.markerBehavior.showAllData) {
                 for(auto f : applicableFormats()) {
                     formatGraph.insert(f);
                 }
@@ -95,18 +98,23 @@ void TraceMarker::assignTrace(Trace *t)
     emit traceChanged(this);
 }
 
-Trace *TraceMarker::trace()
+Trace *Marker::trace()
 {
     return parentTrace;
 }
 
-QString TraceMarker::formatToString(TraceMarker::Format f)
+QString Marker::formatToString(Marker::Format f)
 {
     switch(f) {
     case Format::dB: return "dB";
     case Format::dBAngle: return "dB + angle";
     case Format::RealImag: return "real + imag";
     case Format::Impedance: return "Impedance";
+    case Format::VSWR: return "VSWR";
+    case Format::SeriesR: return "Resistance";
+    case Format::Capacitance: return "Capacitance";
+    case Format::Inductance: return "Inductance";
+    case Format::QualityFactor: return "Quality Factor";
     case Format::TOI: return "Third order intercept";
     case Format::AvgTone: return "Average Tone Level";
     case Format::AvgModulationProduct: return "Average Modulation Product Level";
@@ -115,12 +123,13 @@ QString TraceMarker::formatToString(TraceMarker::Format f)
     case Format::Cutoff: return "Cutoff frequency";
     case Format::CenterBandwidth: return "Center + Bandwidth";
     case Format::InsertionLoss: return "Insertion loss";
+    case Format::P1dB: return "P1dB";
     case Format::Last: return "";
     }
     return "";
 }
 
-TraceMarker::Format TraceMarker::formatFromString(QString s)
+Marker::Format Marker::formatFromString(QString s)
 {
     for(int i=0;i<(int) Format::Last;i++) {
         if(s.compare(formatToString((Format) i)) == 0) {
@@ -130,7 +139,7 @@ TraceMarker::Format TraceMarker::formatFromString(QString s)
     return Format::Last;
 }
 
-std::vector<TraceMarker::Format> TraceMarker::formats()
+std::vector<Marker::Format> Marker::formats()
 {
     std::vector<Format> ret;
     for(int i=0;i<(int) Format::Last;i++) {
@@ -139,26 +148,29 @@ std::vector<TraceMarker::Format> TraceMarker::formats()
     return ret;
 }
 
-std::vector<TraceMarker::Format> TraceMarker::applicableFormats()
+std::vector<Marker::Format> Marker::applicableFormats()
 {
     std::vector<Format> ret;
-    if(isTimeDomain()) {
+    switch(getDomain()) {
+    case Trace::DataType::Time:
         switch(type) {
         case Type::Manual:
         case Type::Delta:
             ret.push_back(Format::dB);
             ret.push_back(Format::RealImag);
             if(parentTrace) {
-                auto step = parentTrace->sample(parentTrace->index(position), Trace::SampleType::TimeStep).y.real();
+                // check if step response data is available
+                auto step = parentTrace->sample(parentTrace->index(position), true).y.real();
                 if(!isnan(step)) {
                     ret.push_back(Format::Impedance);
                 }
             }
             break;
         default:
-            return {};
+            break;
         }
-    } else {
+        break;
+    case Trace::DataType::Frequency:
         switch(type) {
         case Type::Manual:
         case Type::Delta:
@@ -171,12 +183,16 @@ std::vector<TraceMarker::Format> TraceMarker::applicableFormats()
             if(parentTrace) {
                 if(parentTrace->isReflection()) {
                     ret.push_back(Format::Impedance);
+                    ret.push_back(Format::VSWR);
+                    ret.push_back(Format::SeriesR);
+                    ret.push_back(Format::Capacitance);
+                    ret.push_back(Format::Inductance);
+                    ret.push_back(Format::QualityFactor);
                 }
                 if(!isnan(parentTrace->getNoise(parentTrace->minX()))) {
                     ret.push_back(Format::Noise);
                 }
             }
-
             break;
         case Type::Bandpass:
             ret.push_back(Format::CenterBandwidth);
@@ -196,14 +212,44 @@ std::vector<TraceMarker::Format> TraceMarker::applicableFormats()
             ret.push_back(Format::AvgTone);
             ret.push_back(Format::AvgModulationProduct);
             break;
-        case Type::Last:
+        default:
             break;
         }
+        break;
+    case Trace::DataType::Power:
+        switch(type) {
+        case Type::P1dB:
+            ret.push_back(Format::P1dB);
+            [[fallthrough]];
+        case Type::Manual:
+        case Type::Delta:
+        case Type::Maximum:
+        case Type::Minimum:
+            ret.push_back(Format::dB);
+            ret.push_back(Format::dBAngle);
+            ret.push_back(Format::RealImag);
+            if(parentTrace) {
+                if(parentTrace->isReflection()) {
+                    ret.push_back(Format::Impedance);
+                    ret.push_back(Format::VSWR);
+                    ret.push_back(Format::SeriesR);
+                    ret.push_back(Format::Capacitance);
+                    ret.push_back(Format::Inductance);
+                    ret.push_back(Format::QualityFactor);
+                }
+            }
+            break;
+        default:
+            break;
+        }
+        break;
+    case Trace::DataType::Invalid:
+        break;
     }
     return ret;
 }
 
-QString TraceMarker::readableData(Format f)
+QString Marker::readableData(Format f)
 {
     if(!parentTrace) {
         return "";
@@ -217,16 +263,17 @@ QString TraceMarker::readableData(Format f)
         f = formatTable;
     }
 
-    if(isTimeDomain()) {
+    switch(getDomain()) {
+    case Trace::DataType::Time:
         if(type != Type::Delta) {
             switch(f) {
             case Format::dB:
-                return Unit::ToString(Unit::dB(data), "dB", " ", 4);
+                return Unit::ToString(Util::SparamTodB(data), "dB", " ", 4);
             case Format::RealImag:
                 return Unit::ToString(data.real(), "", " ", 5) + "+"+Unit::ToString(data.imag(), "", " ", 5)+"j";
             case Format::Impedance: {
-                auto step = parentTrace->sample(parentTrace->index(position), Trace::SampleType::TimeStep).y.real();
-                auto impedance = 50.0 * (1.0 + step) / (1.0 - step);
+                auto step = parentTrace->sample(parentTrace->index(position), true).y.real();
+                auto impedance = Util::SparamToImpedance(step).real();
                 return Unit::ToString(impedance, "Ω", "m kM", 3);
             }
                 break;
@@ -234,19 +281,19 @@ QString TraceMarker::readableData(Format f)
                 return "Invalid";
             }
         } else {
-            if(!delta || !delta->isTimeDomain()) {
+            if(!delta || delta->getDomain() != Trace::DataType::Time) {
                 return "Invalid";
             }
             switch(f) {
             case Format::dB:
-                return "Δ:"+Unit::ToString(Unit::dB(data) - Unit::dB(delta->data), "dB", " ", 4);
+                return "Δ:"+Unit::ToString(Util::SparamTodB(data) - Util::SparamTodB(delta->data), "dB", " ", 4);
             case Format::RealImag:
                 return "Δ:"+Unit::ToString(data.real() - delta->data.real(), "", " ", 5) + "+"+Unit::ToString(data.imag() - delta->data.real(), "", " ", 5)+"j";
             case Format::Impedance: {
-                auto step = parentTrace->sample(parentTrace->index(position), Trace::SampleType::TimeStep).y.real();
-                auto stepDelta = delta->parentTrace->sample(delta->parentTrace->index(delta->position), Trace::SampleType::TimeStep).y.real();
-                auto impedance = 50.0 * (1.0 + step) / (1.0 - step);
-                auto impedanceDelta = 50.0 * (1.0 + stepDelta) / (1.0 - stepDelta);
+                auto step = parentTrace->sample(parentTrace->index(position), true).y.real();
+                auto stepDelta = delta->parentTrace->sample(delta->parentTrace->index(delta->position), true).y.real();
+                auto impedance = Util::SparamToImpedance(step).real();
+                auto impedanceDelta = Util::SparamToImpedance(stepDelta).real();
                 return "Δ:"+Unit::ToString(impedance - impedanceDelta, "Ω", "m kM", 3);
             }
                 break;
@@ -254,7 +301,9 @@ QString TraceMarker::readableData(Format f)
                 return "Invalid";
             }
         }
-    } else {
+        break;
+    case Trace::DataType::Frequency:
+    case Trace::DataType::Power:
         switch(type) {
         case Type::PeakTable:
             return "Found " + QString::number(helperMarkers.size()) + " peaks";
@@ -263,9 +312,9 @@ QString TraceMarker::readableData(Format f)
                 return "Invalid delta marker";
             }
             switch(f) {
-            case Format::dB: return "Δ:"+Unit::ToString(Unit::dB(data) - Unit::dB(delta->data), "dB", " ", 4);
+            case Format::dB: return "Δ:"+Unit::ToString(Util::SparamTodB(data) - Util::SparamTodB(delta->data), "dB", " ", 4);
             case Format::dBAngle: {
-                QString ret = "Δ:"+Unit::ToString(Unit::dB(data) - Unit::dB(delta->data), "dB", " ", 4) + "/";
+                QString ret = "Δ:"+Unit::ToString(Util::SparamTodB(data) - Util::SparamTodB(delta->data), "dB", " ", 4) + "/";
                 auto phase = arg(data)*180/M_PI;
                 auto deltaphase = arg(delta->data)*180/M_PI;
                 auto phasediff = phase - deltaphase;
@@ -279,10 +328,14 @@ QString TraceMarker::readableData(Format f)
             }
             case Format::RealImag: return "Δ:"+Unit::ToString(data.real() - delta->data.real(), "", " ", 5) + "+"+Unit::ToString(data.imag() - delta->data.imag(), "", " ", 5)+"j";
             case Format::Impedance: {
-                auto impedance = 50.0 * (1.0 + data) / (1.0 - data);
-                auto delta_impedance = 50.0 * (1.0 + delta->data) / (1.0 - delta->data);
+                auto impedance = Util::SparamToImpedance(data);
+                auto delta_impedance = Util::SparamToImpedance(delta->data);
                 return "Δ:"+Unit::ToString(impedance.real() - delta_impedance.real(), "Ω", "m k", 5) + "+"+Unit::ToString(impedance.imag() - delta_impedance.imag(), "Ω", "m k", 5)+"j";
             }
+            case Format::SeriesR: return "Δ:"+Unit::ToString(Util::SparamToResistance(data) - Util::SparamToResistance(delta->data), "Ω", "m kM", 4);
+            case Format::Capacitance: return "Δ:"+Unit::ToString(Util::SparamToCapacitance(data, position) - Util::SparamToCapacitance(delta->data, delta->position), "F", "pnum ", 4);
+            case Format::Inductance: return "Δ:"+Unit::ToString(Util::SparamToInductance(data, position) - Util::SparamToInductance(delta->data, delta->position), "H", "pnum ", 4);
+            case Format::QualityFactor: return "ΔQ:" + Unit::ToString(Util::SparamToQualityFactor(data) - Util::SparamToQualityFactor(delta->data), "", " ", 3);
             case Format::Noise: return "Δ:"+Unit::ToString(parentTrace->getNoise(position) - delta->parentTrace->getNoise(delta->position), "dbm/Hz", " ", 3);
             default: return "Invalid";
             }
@@ -290,9 +343,20 @@ QString TraceMarker::readableData(Format f)
             break;
         default:
             switch(f) {
-            case Format::dB: return Unit::ToString(Unit::dB(data), "dB", " ", 4);
-            case Format::dBAngle: return Unit::ToString(Unit::dB(data), "dB", " ", 4) + "/"+Unit::ToString(arg(data)*180/M_PI, "°", " ", 4);
+            case Format::dB: return Unit::ToString(Util::SparamTodB(data), "dB", " ", 4);
+            case Format::dBAngle: return Unit::ToString(Util::SparamTodB(data), "dB", " ", 4) + "/"+Unit::ToString(arg(data)*180/M_PI, "°", " ", 4);
             case Format::RealImag: return Unit::ToString(data.real(), "", " ", 5) + "+"+Unit::ToString(data.imag(), "", " ", 5)+"j";
+            case Format::VSWR:
+                if(abs(data) < 1.0) {
+                    return "VSWR: "+Unit::ToString(Util::SparamToVSWR(data), ":1", " ", 5);
+                } else {
+                    return "VSWR: NaN";
+                }
+                break;
+            case Format::SeriesR: return Unit::ToString(Util::SparamToResistance(data), "Ω", "m kM", 4);
+            case Format::Capacitance: return Unit::ToString(Util::SparamToCapacitance(data, position), "F", "pnum ", 4);
+            case Format::Inductance: return Unit::ToString(Util::SparamToInductance(data, position), "H", "pnum ", 4);
+            case Format::QualityFactor: return "Q:" + Unit::ToString(Util::SparamToQualityFactor(data), "", " ", 3);
             case Format::Noise: return Unit::ToString(parentTrace->getNoise(position), "dbm/Hz", " ", 3);
             case Format::TOI: {
                 auto avgFundamental = (helperMarkers[0]->toDecibel() + helperMarkers[1]->toDecibel()) / 2;
@@ -321,7 +385,7 @@ QString TraceMarker::readableData(Format f)
                 if(parentTrace->isReflection()) {
                     return "Calculation not possible with reflection measurement";
                 } else {
-                    return "Ins. Loss:"+Unit::ToString(Unit::dB(data), "dB", " ", 3);
+                    return "Ins. Loss:"+Unit::ToString(Util::SparamTodB(data), "dB", " ", 3);
                 }
             case Format::PhaseNoise: {
                 auto carrier = toDecibel();
@@ -330,7 +394,7 @@ QString TraceMarker::readableData(Format f)
             }
                 break;
             case Format::Impedance: {
-                auto impedance = 50.0 * (1.0 + data) / (1.0 - data);
+                auto impedance = Util::SparamToImpedance(data);
                 return Unit::ToString(impedance.real(), "Ω", "m k", 5) + "+"+Unit::ToString(impedance.imag(), "Ω", "m k", 5)+"j";
             }
             case Format::CenterBandwidth:
@@ -354,15 +418,25 @@ QString TraceMarker::readableData(Format f)
                     return ret;
                 }
                 break;
+            case Format::P1dB:
+                if(position == parentTrace->maxX()) {
+                    // compression point higher than measurable with current power setting
+                    return "Input P1dB:>"+Unit::ToString(position, "dBm", " ", 4);
+                } else {
+                    return "Input P1dB:"+Unit::ToString(position, "dBm", " ", 4);
+                }
             case Format::Last:
                 return "Invalid";
             }
         }
+        break;
+    case Trace::DataType::Invalid:
+        break;
     }
     return "Invalid";
 }
 
-QString TraceMarker::readablePosition()
+QString Marker::readablePosition()
 {
     auto pos = position;
     QString ret;
@@ -370,17 +444,26 @@ QString TraceMarker::readablePosition()
         pos -= delta->position;
         ret += "Δ:";
     }
-    if(isTimeDomain()) {
+    switch(getDomain()) {
+    case Trace::DataType::Time:
         ret += Unit::ToString(pos, "s", "pnum ", 6);
-    } else {
+        break;
+    case Trace::DataType::Frequency:
         ret += Unit::ToString(pos, "Hz", " kMG", 6);
+        break;
+    case Trace::DataType::Power:
+        ret += Unit::ToString(pos, "dBm", " ", 4);
+        break;
+    case Trace::DataType::Invalid:
+        ret += "Invalid";
     }
     return ret;
 }
 
-QString TraceMarker::readableSettings()
+QString Marker::readableSettings()
 {
-    if(isTimeDomain()) {
+    switch(getDomain()) {
+    case Trace::DataType::Time:
         switch(type) {
         case Type::Manual:
         case Type::Delta:
@@ -388,7 +471,8 @@ QString TraceMarker::readableSettings()
         default:
             return "Unhandled case";
         }
-    } else {
+        break;
+    case Trace::DataType::Frequency:
         switch(type) {
         case Type::Manual:
         case Type::Maximum:
@@ -406,22 +490,41 @@ QString TraceMarker::readableSettings()
         case Type::PhaseNoise:
             return Unit::ToString(offset, "Hz", " kM", 4);
         default:
-            return "Unhandled case";
+            break;
         }
+        break;
+    case Trace::DataType::Power:
+        switch(type) {
+        case Type::Manual:
+        case Type::Maximum:
+        case Type::Minimum:
+        case Type::Delta:
+            return Unit::ToString(position, "dBm", " ", 4);
+        case Type::P1dB:
+            return "none";
+        default:
+            break;
+        }
+        break;
+    case Trace::DataType::Invalid:
+        break;
     }
+    return "Unhandled case";
 }
 
-QString TraceMarker::tooltipSettings()
+QString Marker::tooltipSettings()
 {
-    if(isTimeDomain()) {
+    switch(getDomain()) {
+    case Trace::DataType::Time:
         switch(type) {
         case Type::Manual:
         case Type::Delta:
             return "Time/Distance";
         default:
-            return QString();
+            break;
         }
-    } else {
+        break;
+    case Trace::DataType::Frequency:
         switch(type) {
         case Type::Manual:
         case Type::Maximum:
@@ -437,12 +540,27 @@ QString TraceMarker::tooltipSettings()
         case Type::PhaseNoise:
             return "Frequency offset";
         default:
+            break;
+        }
+        break;
+    case Trace::DataType::Power:
+        switch(type) {
+        case Type::Manual:
+        case Type::Maximum:
+        case Type::Minimum:
+        case Type::Delta:
+            return "Input power position";
+        default:
             return QString();
         }
+        break;
+    case Trace::DataType::Invalid:
+        break;
     }
+    return QString();
 }
 
-QString TraceMarker::readableType()
+QString Marker::readableType()
 {
     if(parent) {
         return description;
@@ -451,20 +569,21 @@ QString TraceMarker::readableType()
     }
 }
 
-void TraceMarker::setPosition(double pos)
+void Marker::setPosition(double pos)
 {
     position = pos;
     constrainPosition();
+    emit positionChanged(position);
 }
 
-void TraceMarker::parentTraceDeleted(Trace *t)
+void Marker::parentTraceDeleted(Trace *t)
 {
     if(t == parentTrace) {
         delete this;
     }
 }
 
-void TraceMarker::traceDataChanged()
+void Marker::traceDataChanged()
 {
     complex<double> newdata;
     if(!parentTrace || parentTrace->numSamples() == 0) {
@@ -477,8 +596,7 @@ void TraceMarker::traceDataChanged()
             newdata = numeric_limits<complex<double>>::quiet_NaN();
         } else {
             // some data of the parent trace changed, check if marker data also changed
-            auto sampleType = isTimeDomain() ? Trace::SampleType::TimeImpulse : Trace::SampleType::Frequency;
-            newdata = parentTrace->sample(parentTrace->index(position), sampleType).y;
+            newdata = parentTrace->sample(parentTrace->index(position)).y;
         }
     }
     if (newdata != data) {
@@ -488,7 +606,7 @@ void TraceMarker::traceDataChanged()
     }
 }
 
-void TraceMarker::updateSymbol()
+void Marker::updateSymbol()
 {
     if(isVisible()) {
         constexpr int width = 15, height = 15;
@@ -510,20 +628,20 @@ void TraceMarker::updateSymbol()
     emit symbolChanged(this);
 }
 
-void TraceMarker::checkDeltaMarker()
+void Marker::checkDeltaMarker()
 {
     if(type != Type::Delta) {
         // not a delta marker, nothing to do
         return;
     }
     // Check if type of delta marker is still okay
-    if(!delta || delta->isTimeDomain() != isTimeDomain()) {
+    if(!delta || delta->getDomain() != getDomain()) {
         // not the same domain anymore, adjust delta
         assignDeltaMarker(bestDeltaCandidate());
     }
 }
 
-void TraceMarker::deltaDeleted()
+void Marker::deltaDeleted()
 {
     // the delta marker of this marker has been deleted, find new match
     delta = nullptr;
@@ -532,7 +650,7 @@ void TraceMarker::deltaDeleted()
     update();
 }
 
-void TraceMarker::updateContextmenu()
+void Marker::updateContextmenu()
 {
     if(parent) {
         // do nothing, using contextmenu from parent anyway
@@ -600,20 +718,74 @@ void TraceMarker::updateContextmenu()
         graph->addAction(setFormatAction);
     }
 
+    std::vector<MarkerGroup*> applicableGroups;
+    for(auto g : model->getGroups()) {
+        if(g->applicable(this)) {
+            applicableGroups.push_back(g);
+        }
+    }
+
+    contextmenu.addSeparator();
+
+    bool needsSeparator = false;
+    if((applicableGroups.size() > 0 && group == nullptr) || applicableGroups.size() > 1) {
+        // there are other groups available than the one the marker might already be assigned to
+        auto addGroupMenu = new QMenu("Add to linked group");
+        auto groupGroup = new QActionGroup(addGroupMenu);
+        for(auto g : model->getGroups()) {
+            auto addGroupAction = new QAction(QString::number(g->getNumber()));
+            groupGroup->addAction(addGroupAction);
+            addGroupAction->setCheckable(true);
+            if(g == group) {
+                // already assigned to this group
+                addGroupAction->setChecked(true);
+            }
+            connect(addGroupAction, &QAction::triggered, [=](bool checked){
+                if(checked) {
+                    g->add(this);
+                }
+            });
+            addGroupMenu->addAction(addGroupAction);
+        }
+        contextmenu.addMenu(addGroupMenu);
+        needsSeparator = true;
+    }
+    if(group != nullptr) {
+        // "remove from group" available
+        auto removeGroup = new QAction("Remove from linked group");
+        connect(removeGroup, &QAction::triggered, [=](){
+            group->remove(this);
+        });
+        contextmenu.addAction(removeGroup);
+        needsSeparator = true;
+    }
+    if(needsSeparator) {
+        contextmenu.addSeparator();
+    }
+
+
     auto deleteAction = new QAction("Delete");
-    connect(deleteAction, &QAction::triggered, this, &TraceMarker::deleteLater);
+    connect(deleteAction, &QAction::triggered, this, &Marker::deleteLater);
     contextmenu.addAction(deleteAction);
 }
 
-std::set<TraceMarker::Type> TraceMarker::getSupportedTypes()
+void Marker::traceTypeChanged()
 {
-    set<TraceMarker::Type> supported;
+    // domain may have changed
+    emit domainChanged(this);
+}
+
+std::set<Marker::Type> Marker::getSupportedTypes()
+{
+    set<Marker::Type> supported;
     if(parentTrace) {
-        if(isTimeDomain()) {
+        switch(getDomain()) {
+        case Trace::DataType::Time:
             // only basic markers in time domain
             supported.insert(Type::Manual);
             supported.insert(Type::Delta);
-        } else {
+            break;
+        case Trace::DataType::Frequency:
             // all traces support some basic markers
             supported.insert(Type::Manual);
             supported.insert(Type::Maximum);
@@ -642,12 +814,22 @@ std::set<TraceMarker::Type> TraceMarker::getSupportedTypes()
                 default: break;
                 }
             }
+            break;
+        case Trace::DataType::Power:
+            supported.insert(Type::Manual);
+            supported.insert(Type::Maximum);
+            supported.insert(Type::Minimum);
+            supported.insert(Type::Delta);
+            supported.insert(Type::P1dB);
+            break;
+        case Trace::DataType::Invalid:
+            break;
         }
     }
     return supported;
 }
 
-void TraceMarker::constrainPosition()
+void Marker::constrainPosition()
 {
     if(parentTrace) {
         if(parentTrace->size() > 0)  {
@@ -661,7 +843,7 @@ void TraceMarker::constrainPosition()
     }
 }
 
-void TraceMarker::constrainFormat()
+void Marker::constrainFormat()
 {
     auto vec = applicableFormats();
     // check format
@@ -679,13 +861,13 @@ void TraceMarker::constrainFormat()
     }
 }
 
-TraceMarker *TraceMarker::bestDeltaCandidate()
+Marker *Marker::bestDeltaCandidate()
 {
-    TraceMarker *match = nullptr;
+    Marker *match = nullptr;
     // invalid delta marker assigned, attempt to find a matching marker
     for(int pass = 0;pass < 3;pass++) {
         for(auto m : model->getMarkers()) {
-            if(m->isTimeDomain() != isTimeDomain()) {
+            if(m->getDomain() != getDomain()) {
                 // markers are not on the same domain
                 continue;
             }
@@ -707,26 +889,26 @@ TraceMarker *TraceMarker::bestDeltaCandidate()
     return match;
 }
 
-void TraceMarker::assignDeltaMarker(TraceMarker *m)
+void Marker::assignDeltaMarker(Marker *m)
 {
     if(type != Type::Delta) {
         // ignore
         return;
     }
     if(delta) {
-        disconnect(delta, &TraceMarker::dataChanged, this, &TraceMarker::update);
+        disconnect(delta, &Marker::dataChanged, this, &Marker::update);
     }
     delta = m;
     if(delta && delta != this) {
         // this marker has to be updated when the delta marker changes
-        connect(delta, &TraceMarker::rawDataChanged, this, &TraceMarker::update);
-        connect(delta, &TraceMarker::domainChanged, this, &TraceMarker::checkDeltaMarker);
-        connect(delta, &TraceMarker::deleted, this, &TraceMarker::deltaDeleted);
+        connect(delta, &Marker::rawDataChanged, this, &Marker::update);
+        connect(delta, &Marker::domainChanged, this, &Marker::checkDeltaMarker);
+        connect(delta, &Marker::deleted, this, &Marker::deltaDeleted);
     }
     emit assignedDeltaChanged(this);
 }
 
-void TraceMarker::deleteHelperMarkers()
+void Marker::deleteHelperMarkers()
 {
     if(helperMarkers.size() > 0) {
         emit beginRemoveHelperMarkers(this);
@@ -738,7 +920,7 @@ void TraceMarker::deleteHelperMarkers()
     }
 }
 
-void TraceMarker::setType(TraceMarker::Type t)
+void Marker::setType(Marker::Type t)
 {
     // remove any potential helper markers
     deleteHelperMarkers();
@@ -775,7 +957,7 @@ void TraceMarker::setType(TraceMarker::Type t)
     }
     // create helper markers
     for(auto h : required_helpers) {
-        auto helper = new TraceMarker(model, number, this, h.description);
+        auto helper = new Marker(model, number, this, h.description);
         helper->suffix = h.suffix;
         helper->assignTrace(parentTrace);
         helper->setType(h.type);
@@ -788,12 +970,12 @@ void TraceMarker::setType(TraceMarker::Type t)
     update();
 }
 
-double TraceMarker::toDecibel()
+double Marker::toDecibel()
 {
-    return Unit::dB(data);
+    return Util::SparamTodB(data);
 }
 
-bool TraceMarker::isVisible()
+bool Marker::isVisible()
 {
     switch(type) {
     case Type::Manual:
@@ -801,13 +983,14 @@ bool TraceMarker::isVisible()
     case Type::Maximum:
     case Type::Minimum:
     case Type::PhaseNoise:
+    case Type::P1dB:
         return true;
     default:
         return false;
     }
 }
 
-void TraceMarker::setTableFormat(TraceMarker::Format f)
+void Marker::setTableFormat(Marker::Format f)
 {
     if(formatTable == f) {
         // already correct format, nothing to do
@@ -825,28 +1008,42 @@ void TraceMarker::setTableFormat(TraceMarker::Format f)
     emit dataFormatChanged(this);
 }
 
-std::set<TraceMarker::Format> TraceMarker::getGraphDisplayFormats() const
+MarkerGroup *Marker::getGroup() const
+{
+    return group;
+}
+
+void Marker::setGroup(MarkerGroup *value)
+{
+    group = value;
+    updateContextmenu();
+}
+
+std::set<Marker::Format> Marker::getGraphDisplayFormats() const
 {
     return formatGraph;
 }
 
-TraceMarker::Type TraceMarker::getType() const
+Marker::Type Marker::getType() const
 {
     return type;
 }
 
-QString TraceMarker::getSuffix() const
+QString Marker::getSuffix() const
 {
     return suffix;
 }
 
-nlohmann::json TraceMarker::toJSON()
+nlohmann::json Marker::toJSON()
 {
     nlohmann::json j;
     j["trace"] = parentTrace->toHash();
     j["type"] = typeToString(type).toStdString();
     j["number"] = number;
     j["position"] = position;
+    if(group) {
+        j["group"] = group->getNumber();
+    }
     switch(type) {
     case Type::Delta:
         j["delta_marker"] = delta->toHash();
@@ -875,7 +1072,7 @@ nlohmann::json TraceMarker::toJSON()
     return j;
 }
 
-void TraceMarker::fromJSON(nlohmann::json j)
+void Marker::fromJSON(nlohmann::json j)
 {
     if(!j.contains("trace")) {
         throw runtime_error("Marker has no trace assigned");
@@ -937,9 +1134,14 @@ void TraceMarker::fromJSON(nlohmann::json j)
     }
     updateContextmenu();
     update();
+
+    if(j.contains("group")) {
+        unsigned int number = j.value("group", 1);
+        model->addToGroupCreateIfNotExisting(this, number);
+    }
 }
 
-unsigned int TraceMarker::toHash()
+unsigned int Marker::toHash()
 {
     // taking the easy way: create the json string and hash it (already contains all necessary information)
     // This is slower than it could be, but this function is only used when loading setups, so this isn't a big problem
@@ -947,12 +1149,12 @@ unsigned int TraceMarker::toHash()
     return hash<std::string>{}(json_string);
 }
 
-const std::vector<TraceMarker *> &TraceMarker::getHelperMarkers() const
+const std::vector<Marker *> &Marker::getHelperMarkers() const
 {
     return helperMarkers;
 }
 
-TraceMarker *TraceMarker::helperMarker(unsigned int i)
+Marker *Marker::helperMarker(unsigned int i)
 {
     if(i < helperMarkers.size()) {
         return helperMarkers[i];
@@ -961,12 +1163,12 @@ TraceMarker *TraceMarker::helperMarker(unsigned int i)
     }
 }
 
-TraceMarker *TraceMarker::getParent() const
+Marker *Marker::getParent() const
 {
     return parent;
 }
 
-void TraceMarker::setNumber(int value)
+void Marker::setNumber(int value)
 {
     number = value;
     updateSymbol();
@@ -975,7 +1177,7 @@ void TraceMarker::setNumber(int value)
     }
 }
 
-QWidget *TraceMarker::getTypeEditor(QAbstractItemDelegate *delegate)
+QWidget *Marker::getTypeEditor(QAbstractItemDelegate *delegate)
 {
     auto c = new QComboBox;
     for(auto t : getSupportedTypes()) {
@@ -1032,7 +1234,7 @@ QWidget *TraceMarker::getTypeEditor(QAbstractItemDelegate *delegate)
     }
 }
 
-void TraceMarker::updateTypeFromEditor(QWidget *w)
+void Marker::updateTypeFromEditor(QWidget *w)
 {
     QComboBox *c;
     if(type == Type::Delta) {
@@ -1050,39 +1252,71 @@ void TraceMarker::updateTypeFromEditor(QWidget *w)
     update();
 }
 
-SIUnitEdit *TraceMarker::getSettingsEditor()
+SIUnitEdit *Marker::getSettingsEditor()
 {
-    if(isTimeDomain()) {
+    SIUnitEdit *ret = nullptr;
+    switch(getDomain()) {
+    case Trace::DataType::Time:
         switch(type) {
         case Type::Manual:
         case Type::Delta:
-            return new SIUnitEdit("", "fpnum k", 6);
+            ret = new SIUnitEdit("", "fpnum k", 6);
+            ret->setValue(position);
+            break;
         default:
             return nullptr;
         }
-    } else {
+        break;
+    case Trace::DataType::Frequency:
         switch(type) {
         case Type::Manual:
         case Type::Maximum:
         case Type::Minimum:
         case Type::Delta:
+            ret = new SIUnitEdit("Hz", " kMG", 6);
+            ret->setValue(position);
+            break;
         case Type::PhaseNoise:
-        default:
-            return new SIUnitEdit("Hz", " kMG", 6);
+            ret = new SIUnitEdit("Hz", " kMG", 6);
+            ret->setValue(offset);
+            break;
         case Type::Lowpass:
         case Type::Highpass:
-        case Type::PeakTable:
         case Type::Bandpass:        // initialize with "dB"
-            return new SIUnitEdit("db", " ", 3);
-        case Type::TOI:
+            ret = new SIUnitEdit("db", " ", 3);
+            ret->setValue(cutoffAmplitude);
+            break;
+        case Type::PeakTable:
+            ret = new SIUnitEdit("db", " ", 3);
+            ret->setValue(peakThreshold);
+            break;
+        default:
             return nullptr;
         }
+        break;
+    case Trace::DataType::Power:
+        switch(type) {
+        case Type::Manual:
+        case Type::Maximum:
+        case Type::Minimum:
+        case Type::Delta:
+            ret = new SIUnitEdit("dBm", " ", 4);
+            ret->setValue(position);
+            break;
+        default:
+            return nullptr;
+        }
+        break;
+    case Trace::DataType::Invalid:
+        return nullptr;
     }
+    return ret;
 }
 
-void TraceMarker::adjustSettings(double value)
+void Marker::adjustSettings(double value)
 {
-    if(isTimeDomain()) {
+    switch(getDomain()) {
+    case Trace::DataType::Time:
         switch(type) {
         case Type::Manual:
         case Type::Delta: {
@@ -1098,7 +1332,8 @@ void TraceMarker::adjustSettings(double value)
         default:
             break;
         }
-    } else {
+        break;
+    case Trace::DataType::Frequency:
         switch(type) {
         case Type::Manual:
         case Type::Maximum:
@@ -1123,11 +1358,26 @@ void TraceMarker::adjustSettings(double value)
         default:
             break;
         }
+        break;
+    case Trace::DataType::Power:
+        switch(type) {
+        case Type::Manual:
+        case Type::Maximum:
+        case Type::Minimum:
+        case Type::Delta:
+            setPosition(value);
+            break;
+        default:
+            break;
+        }
+        break;
+    case Trace::DataType::Invalid:
+        break;
     }
     update();
 }
 
-QMenu *TraceMarker::getContextMenu() {
+QMenu *Marker::getContextMenu() {
     if(parent) {
         return parent->getContextMenu();
     } else {
@@ -1135,7 +1385,7 @@ QMenu *TraceMarker::getContextMenu() {
     }
 }
 
-void TraceMarker::update()
+void Marker::update()
 {
     if(!parentTrace->size()) {
         // empty trace, nothing to do
@@ -1147,17 +1397,17 @@ void TraceMarker::update()
         // nothing to do
         break;
     case Type::Maximum:
-        setPosition(parentTrace->findExtremumFreq(true));
+        setPosition(parentTrace->findExtremum(true));
         break;
     case Type::Minimum:
-        setPosition(parentTrace->findExtremumFreq(false));
+        setPosition(parentTrace->findExtremum(false));
         break;
     case Type::PeakTable: {
         deleteHelperMarkers();
         auto peaks = parentTrace->findPeakFrequencies(100, peakThreshold);
         char suffix = 'a';
         for(auto p : peaks) {
-            auto helper = new TraceMarker(model, number, this);
+            auto helper = new Marker(model, number, this);
             helper->suffix = suffix;
             helper->assignTrace(parentTrace);
             helper->setPosition(p);
@@ -1176,16 +1426,16 @@ void TraceMarker::update()
             break;
         } else {
             // find the maximum
-            auto peakFreq = parentTrace->findExtremumFreq(true);
+            auto peakFreq = parentTrace->findExtremum(true);
             // this marker shows the insertion loss
             setPosition(peakFreq);
             // find the cutoff frequency
             auto index = parentTrace->index(peakFreq);
-            auto peakAmplitude = Unit::dB(parentTrace->sample(index).y);
+            auto peakAmplitude = Util::SparamTodB(parentTrace->sample(index).y);
             auto cutoff = peakAmplitude + cutoffAmplitude;
             int inc = type == Type::Lowpass ? 1 : -1;
             while(index >= 0 && index < (int) parentTrace->size()) {
-                auto amplitude = Unit::dB(parentTrace->sample(index).y);
+                auto amplitude = Util::SparamTodB(parentTrace->sample(index).y);
                 if(amplitude <= cutoff) {
                     break;
                 }
@@ -1206,17 +1456,17 @@ void TraceMarker::update()
             break;
         } else {
             // find the maximum
-            auto peakFreq = parentTrace->findExtremumFreq(true);
+            auto peakFreq = parentTrace->findExtremum(true);
             // this marker shows the insertion loss
             setPosition(peakFreq);
             // find the cutoff frequencies
             auto index = parentTrace->index(peakFreq);
-            auto peakAmplitude = Unit::dB(parentTrace->sample(index).y);
+            auto peakAmplitude = Util::SparamTodB(parentTrace->sample(index).y);
             auto cutoff = peakAmplitude + cutoffAmplitude;
 
             auto low_index = index;
             while(low_index >= 0) {
-                auto amplitude = Unit::dB(parentTrace->sample(low_index).y);
+                auto amplitude = Util::SparamTodB(parentTrace->sample(low_index).y);
                 if(amplitude <= cutoff) {
                     break;
                 }
@@ -1230,7 +1480,7 @@ void TraceMarker::update()
 
             auto high_index = index;
             while(high_index < (int) parentTrace->size()) {
-                auto amplitude = Unit::dB(parentTrace->sample(high_index).y);
+                auto amplitude = Util::SparamTodB(parentTrace->sample(high_index).y);
                 if(amplitude <= cutoff) {
                     break;
                 }
@@ -1262,8 +1512,25 @@ void TraceMarker::update()
     }
         break;
     case Type::PhaseNoise:
-        setPosition(parentTrace->findExtremumFreq(true));
+        setPosition(parentTrace->findExtremum(true));
         helperMarkers[0]->setPosition(position + offset);
+        break;
+    case Type::P1dB: {
+        // find maximum
+        auto maxpos = parentTrace->findExtremum(true);
+        // starting at the maximum point, traverse trace data towards higher power levels until amplitude dropped by 1dB
+        auto maxindex = parentTrace->index(maxpos);
+        auto maxpower = abs(parentTrace->sample(maxindex).y);
+        double p1db = parentTrace->maxX();
+        for(unsigned int i = maxindex; i < parentTrace->size(); i++) {
+            auto sample = parentTrace->sample(i);
+            if(Util::SparamTodB(maxpower) - Util::SparamTodB(sample.y) >= 1.0) {
+                p1db = sample.x;
+                break;
+            }
+        }
+        setPosition(p1db);
+    }
         break;
     case Type::Last:
         break;
@@ -1271,22 +1538,22 @@ void TraceMarker::update()
     emit dataChanged(this);
 }
 
-Trace *TraceMarker::getTrace() const
+Trace *Marker::getTrace() const
 {
     return parentTrace;
 }
 
-int TraceMarker::getNumber() const
+int Marker::getNumber() const
 {
     return number;
 }
 
-std::complex<double> TraceMarker::getData() const
+std::complex<double> Marker::getData() const
 {
     return data;
 }
 
-bool TraceMarker::isMovable()
+bool Marker::isMovable()
 {
     if(parent) {
         // helper traces are never movable by the user
@@ -1301,23 +1568,21 @@ bool TraceMarker::isMovable()
     }
 }
 
-QPixmap &TraceMarker::getSymbol()
+QPixmap &Marker::getSymbol()
 {
     return symbol;
 }
 
-double TraceMarker::getPosition() const
+double Marker::getPosition() const
 {
     return position;
 }
 
-bool TraceMarker::isTimeDomain()
+Trace::DataType Marker::getDomain()
 {
     if(parentTrace) {
-        if(parentTrace->outputType() == Trace::DataType::Time) {
-            return true;
-        }
+        return parentTrace->outputType();
     }
-    return false;
+    return Trace::DataType::Invalid;
 }
 

@@ -11,7 +11,7 @@
 #include "Calibration/calibration.h"
 #include <QProgressDialog>
 #include "Traces/tracemodel.h"
-#include "Traces/tracemarkermodel.h"
+#include "Traces/Marker/markermodel.h"
 #include "averaging.h"
 #include "Device/devicelog.h"
 #include "preferences.h"
@@ -21,6 +21,7 @@
 #include <QCommandLineParser>
 #include "scpi.h"
 #include "tcpserver.h"
+#include "Device/manualcontroldialog.h"
 
 namespace Ui {
 class MainWindow;
@@ -40,6 +41,9 @@ public:
     Ui::MainWindow *getUi() const;
     QStackedWidget *getCentral() const;
     Device *getDevice() const;
+
+    const QString& getAppVersion() const;
+    const QString& getAppGitHash() const;
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -77,6 +81,8 @@ private:
     QString deviceSerial;
     QActionGroup *deviceActionGroup;
 
+    ManualControlDialog *manual;
+
     // Modes
     VNA *vna;
     Generator *generator;
@@ -95,6 +101,9 @@ private:
 
     SCPI scpi;
     TCPServer *server;
+
+    QString appVersion;
+    QString appGitHash;
 };
 
-#endif // VNA_H
+#endif // APPWINDOW_H

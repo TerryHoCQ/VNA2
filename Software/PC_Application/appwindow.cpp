@@ -30,7 +30,7 @@
 #include "CustomWidgets/tilewidget.h"
 #include "CustomWidgets/siunitedit.h"
 #include <QDockWidget>
-#include "Traces/markerwidget.h"
+#include "Traces/Marker/markerwidget.h"
 #include "Tools/impedancematchdialog.h"
 #include "Calibration/calibrationtracedialog.h"
 #include "ui_main.h"
@@ -50,28 +50,32 @@
 #include <QDebug>
 #include "CustomWidgets/jsonpickerdialog.h"
 #include <QCommandLineParser>
+#include "Util/app_common.h"
+#include "about.h"
 
 using namespace std;
+
+
+static const QString APP_VERSION = QString::number(FW_MAJOR) + "." +
+                                   QString::number(FW_MINOR) + "." +
+                                   QString::number(FW_PATCH);
+static const QString APP_GIT_HASH = QString(GITHASH);
 
 AppWindow::AppWindow(QWidget *parent)
     : QMainWindow(parent)
     , deviceActionGroup(new QActionGroup(this))
+    , manual(nullptr)
     , ui(new Ui::MainWindow)
     , server(nullptr)
+    , appVersion(APP_VERSION)
+    , appGitHash(APP_GIT_HASH)
 {
-    QCoreApplication::setOrganizationName("LibreVNA");
-    QCoreApplication::setApplicationName("LibreVNA-GUI");
-    auto commit = QString(GITHASH);
-    commit.truncate(7);
-    QCoreApplication::setApplicationVersion(QString::number(FW_MAJOR) + "." + QString::number(FW_MINOR)
-                                            + "." + QString::number(FW_PATCH) + FW_SUFFIX + " ("+ commit+")");
-
     qSetMessagePattern("%{time process}: [%{type}] %{message}");
 
 //    qDebug().setVerbosity(0);
     qDebug() << "Application start";
 
-    parser.setApplicationDescription("LibreVNA-GUI");
+    parser.setApplicationDescription(qlibrevnaApp->applicationName());
     parser.addHelpOption();
     parser.addVersionOption();
     parser.addOption(QCommandLineOption({"p","port"}, "Specify port to listen for SCPI commands", "port"));
@@ -88,12 +92,12 @@ AppWindow::AppWindow(QWidget *parent)
         auto port = parser.value("port").toUInt(&OK);
         if(!OK) {
             // set default port
-            port = Preferences::getInstance().General.SCPI.port;
+            port = Preferences::getInstance().SCPIServer.port;
         }
         StartTCPServer(port);
         Preferences::getInstance().manualTCPport();
-    } else if(Preferences::getInstance().General.SCPI.enabled) {
-        StartTCPServer(Preferences::getInstance().General.SCPI.port);
+    } else if(Preferences::getInstance().SCPIServer.enabled) {
+        StartTCPServer(Preferences::getInstance().SCPIServer.port);
     }
 
     ui->setupUi(this);
@@ -190,24 +194,32 @@ AppWindow::AppWindow(QWidget *parent)
     connect(ui->actionPreferences, &QAction::triggered, [=](){
         // save previous SCPI settings in case they change
         auto &p = Preferences::getInstance();
-        auto SCPIenabled = p.General.SCPI.enabled;
-        auto SCPIport = p.General.SCPI.port;
+        auto SCPIenabled = p.SCPIServer.enabled;
+        auto SCPIport = p.SCPIServer.port;
         p.edit();
-        if(SCPIenabled != p.General.SCPI.enabled || SCPIport != p.General.SCPI.port) {
+        if(SCPIenabled != p.SCPIServer.enabled || SCPIport != p.SCPIServer.port) {
             StopTCPServer();
-            if(p.General.SCPI.enabled) {
-                StartTCPServer(p.General.SCPI.port);
+            if(p.SCPIServer.enabled) {
+                StartTCPServer(p.SCPIServer.port);
             }
         }
-        // settings might have changed, update necessary stuff
-//        TraceXYPlot::updateGraphColors();
-    });
-    connect(ui->actionAbout, &QAction::triggered, [=](){
-        QMessageBox::about(this, "About", "More information: github.com/jankae/LibreVNA\n"
-                           "\nVersion: " + QCoreApplication::applicationVersion());
+        auto active = Mode::getActiveMode();
+
+        if(active == spectrumAnalyzer) {
+            spectrumAnalyzer->updateGraphColors();
+        }
+        else if (active == vna) {
+             vna->updateGraphColors();
+        }
+
     });
 
-    setWindowTitle("LibreVNA-GUI");
+    connect(ui->actionAbout, &QAction::triggered, [=](){
+        auto &a = About::getInstance();
+        a.about();
+    });
+
+    setWindowTitle(qlibrevnaApp->applicationName() + " v"  + getAppVersion());
 
     setCorner(Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
     setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
@@ -533,6 +545,233 @@ void AppWindow::SetupSCPI()
     scpi.add(vna);
     scpi.add(generator);
     scpi.add(spectrumAnalyzer);
+
+    auto scpi_manual = new SCPINode("MANual");
+    scpi_manual->add(new SCPICommand("STArt",[=](QStringList) -> QString {
+        StartManualControl();
+        return "";
+    }, nullptr));
+    scpi_manual->add(new SCPICommand("STOp",[=](QStringList) -> QString {
+        manual->close();
+        delete manual;
+        return "";
+    }, nullptr));
+
+    auto addBooleanManualSetting = [=](QString cmd, void(ManualControlDialog::*set)(bool), bool(ManualControlDialog::*get)(void)) {
+        scpi_manual->add(new SCPICommand(cmd, [=](QStringList params) -> QString {
+            bool enable;
+            if(!manual || !SCPI::paramToBool(params, 0, enable)) {
+                return "ERROR";
+            }
+            auto set_fn = std::bind(set, manual, std::placeholders::_1);
+            set_fn(enable);
+            return "";
+        }, [=](QStringList) -> QString {
+            if(!manual) {
+                return "ERROR";
+            }
+            auto get_fn = std::bind(get, manual);
+            return get_fn() ? "TRUE" : "FALSE";
+        }));
+    };
+
+    auto addDoubleManualSetting = [=](QString cmd, void(ManualControlDialog::*set)(double), double(ManualControlDialog::*get)(void)) {
+        scpi_manual->add(new SCPICommand(cmd, [=](QStringList params) -> QString {
+            double value;
+            if(!manual || !SCPI::paramToDouble(params, 0, value)) {
+                return "ERROR";
+            }
+            auto set_fn = std::bind(set, manual, std::placeholders::_1);
+            set_fn(value);
+            return "";
+        }, [=](QStringList) -> QString {
+            if(!manual) {
+                return "ERROR";
+            }
+            auto get_fn = std::bind(get, manual);
+            return QString::number(get_fn());
+        }));
+    };
+    auto addIntegerManualSetting = [=](QString cmd, void(ManualControlDialog::*set)(int), int(ManualControlDialog::*get)(void)) {
+        scpi_manual->add(new SCPICommand(cmd, [=](QStringList params) -> QString {
+            double value;
+            if(!manual || !SCPI::paramToDouble(params, 0, value)) {
+                return "ERROR";
+            }
+            auto set_fn = std::bind(set, manual, std::placeholders::_1);
+            set_fn(value);
+            return "";
+        }, [=](QStringList) -> QString {
+            if(!manual) {
+                return "ERROR";
+            }
+            auto get_fn = std::bind(get, manual);
+            return QString::number(get_fn());
+        }));
+    };
+    auto addIntegerManualSettingWithReturnValue = [=](QString cmd, bool(ManualControlDialog::*set)(int), int(ManualControlDialog::*get)(void)) {
+        scpi_manual->add(new SCPICommand(cmd, [=](QStringList params) -> QString {
+            double value;
+            if(!manual || !SCPI::paramToDouble(params, 0, value)) {
+                return "ERROR";
+            }
+            auto set_fn = std::bind(set, manual, std::placeholders::_1);
+            if(set_fn(value)) {
+                return "";
+            } else {
+                return "ERROR";
+            }
+        }, [=](QStringList) -> QString {
+            if(!manual) {
+                return "ERROR";
+            }
+            auto get_fn = std::bind(get, manual);
+            return QString::number(get_fn());
+        }));
+    };
+    auto addIntegerManualQuery = [=](QString cmd, int(ManualControlDialog::*get)(void)) {
+        scpi_manual->add(new SCPICommand(cmd, nullptr, [=](QStringList) -> QString {
+            if(!manual) {
+                return "ERROR";
+            }
+            auto get_fn = std::bind(get, manual);
+            return QString::number(get_fn());
+        }));
+    };
+    auto addDoubleManualQuery = [=](QString cmd, double(ManualControlDialog::*get)(void)) {
+        scpi_manual->add(new SCPICommand(cmd, nullptr, [=](QStringList) -> QString {
+            if(!manual) {
+                return "ERROR";
+            }
+            auto get_fn = std::bind(get, manual);
+            return QString::number(get_fn());
+        }));
+    };
+    auto addBooleanManualQuery = [=](QString cmd, bool(ManualControlDialog::*get)(void)) {
+        scpi_manual->add(new SCPICommand(cmd, nullptr, [=](QStringList) -> QString {
+            if(!manual) {
+                return "ERROR";
+            }
+            auto get_fn = std::bind(get, manual);
+            return get_fn() ? "TRUE" : "FALSE";
+        }));
+    };
+    auto addComplexManualQuery = [=](QString cmd, std::complex<double>(ManualControlDialog::*get)(void)) {
+        scpi_manual->add(new SCPICommand(cmd, nullptr, [=](QStringList) -> QString {
+            if(!manual) {
+                return "ERROR";
+            }
+            auto get_fn = std::bind(get, manual);
+            auto res = get_fn();
+            return QString::number(res.real())+","+QString::number(res.imag());
+        }));
+    };
+
+    addBooleanManualSetting("HSRC_CE", &ManualControlDialog::setHighSourceChipEnable, &ManualControlDialog::getHighSourceChipEnable);
+    addBooleanManualSetting("HSRC_RFEN", &ManualControlDialog::setHighSourceRFEnable, &ManualControlDialog::getHighSourceRFEnable);
+    addBooleanManualQuery("HSRC_LOCKed", &ManualControlDialog::getHighSourceLocked);
+    addIntegerManualSettingWithReturnValue("HSRC_PWR", &ManualControlDialog::setHighSourcePower, &ManualControlDialog::getHighSourcePower);
+    addDoubleManualSetting("HSRC_FREQ", &ManualControlDialog::setHighSourceFrequency, &ManualControlDialog::getHighSourceFrequency);
+    scpi_manual->add(new SCPICommand("HSRC_LPF", [=](QStringList params) -> QString {
+        long value;
+        if(!manual || !SCPI::paramToLong(params, 0, value)) {
+            return "ERROR";
+        }
+        switch(value) {
+        case 947:
+            manual->setHighSourceLPF(ManualControlDialog::LPF::M947);
+            break;
+        case 1880:
+            manual->setHighSourceLPF(ManualControlDialog::LPF::M1880);
+            break;
+        case 3500:
+            manual->setHighSourceLPF(ManualControlDialog::LPF::M3500);
+            break;
+        case 0:
+            manual->setHighSourceLPF(ManualControlDialog::LPF::None);
+            break;
+        default:
+            return "ERROR";
+        }
+        return "";
+    }, [=](QStringList) -> QString {
+        if(!manual) {
+            return "ERROR";
+        }
+        auto lpf = manual->getHighSourceLPF();
+        switch(lpf) {
+        case ManualControlDialog::LPF::M947: return "947";
+        case ManualControlDialog::LPF::M1880: return "1880";
+        case ManualControlDialog::LPF::M3500: return "3500";
+        case ManualControlDialog::LPF::None: return "0";
+        default: return "ERROR";
+        }
+    }));
+    addBooleanManualSetting("LSRC_EN", &ManualControlDialog::setLowSourceEnable, &ManualControlDialog::getLowSourceEnable);
+    addIntegerManualSettingWithReturnValue("LSRC_PWR", &ManualControlDialog::setLowSourcePower, &ManualControlDialog::getLowSourcePower);
+    addDoubleManualSetting("LSRC_FREQ", &ManualControlDialog::setLowSourceFrequency, &ManualControlDialog::getLowSourceFrequency);
+    addBooleanManualSetting("BAND_SW", &ManualControlDialog::setHighband, &ManualControlDialog::getHighband);
+    addDoubleManualSetting("ATTenuator", &ManualControlDialog::setAttenuator, &ManualControlDialog::getAttenuator);
+    addBooleanManualSetting("AMP_EN", &ManualControlDialog::setAmplifierEnable, &ManualControlDialog::getAmplifierEnable);
+    addIntegerManualSettingWithReturnValue("PORT_SW", &ManualControlDialog::setPortSwitch, &ManualControlDialog::getPortSwitch);
+    addBooleanManualSetting("LO1_CE", &ManualControlDialog::setLO1ChipEnable, &ManualControlDialog::getLO1ChipEnable);
+    addBooleanManualSetting("LO1_RFEN", &ManualControlDialog::setLO1RFEnable, &ManualControlDialog::getLO1RFEnable);
+    addBooleanManualQuery("LO1_LOCKed", &ManualControlDialog::getLO1Locked);
+    addDoubleManualSetting("LO1_FREQ", &ManualControlDialog::setLO1Frequency, &ManualControlDialog::getLO1Frequency);
+    addDoubleManualSetting("IF1_FREQ", &ManualControlDialog::setIF1Frequency, &ManualControlDialog::getIF1Frequency);
+    addBooleanManualSetting("LO2_EN", &ManualControlDialog::setLO2Enable, &ManualControlDialog::getLO2Enable);
+    addDoubleManualSetting("LO2_FREQ", &ManualControlDialog::setLO2Frequency, &ManualControlDialog::getLO2Frequency);
+    addDoubleManualSetting("IF2_FREQ", &ManualControlDialog::setIF2Frequency, &ManualControlDialog::getIF2Frequency);
+    addBooleanManualSetting("PORT1_EN", &ManualControlDialog::setPort1Enable, &ManualControlDialog::getPort1Enable);
+    addBooleanManualSetting("PORT2_EN", &ManualControlDialog::setPort2Enable, &ManualControlDialog::getPort2Enable);
+    addBooleanManualSetting("REF_EN", &ManualControlDialog::setRefEnable, &ManualControlDialog::getRefEnable);
+    addIntegerManualSetting("SAMPLES", &ManualControlDialog::setNumSamples, &ManualControlDialog::getNumSamples);
+    scpi_manual->add(new SCPICommand("WINdow", [=](QStringList params) -> QString {
+        if(!manual || params.size() < 1) {
+            return "ERROR";
+        }
+        if (params[0] == "NONE") {
+            manual->setWindow(ManualControlDialog::Window::None);
+        } else if(params[0] == "KAISER") {
+            manual->setWindow(ManualControlDialog::Window::Kaiser);
+        } else if(params[0] == "HANN") {
+            manual->setWindow(ManualControlDialog::Window::Hann);
+        } else if(params[0] == "FLATTOP") {
+            manual->setWindow(ManualControlDialog::Window::FlatTop);
+        } else {
+            return "INVALID WINDOW";
+        }
+        return "";
+    }, [=](QStringList) -> QString {
+        if(!manual) {
+            return "ERROR";
+        }
+        switch((ManualControlDialog::Window) manual->getWindow()) {
+        case ManualControlDialog::Window::None: return "NONE";
+        case ManualControlDialog::Window::Kaiser: return "KAISER";
+        case ManualControlDialog::Window::Hann: return "HANN";
+        case ManualControlDialog::Window::FlatTop: return "FLATTOP";
+        default: return "ERROR";
+        }
+    }));
+    addIntegerManualQuery("PORT1_MIN", &ManualControlDialog::getPort1MinADC);
+    addIntegerManualQuery("PORT1_MAX", &ManualControlDialog::getPort1MaxADC);
+    addDoubleManualQuery("PORT1_MAG", &ManualControlDialog::getPort1Magnitude);
+    addDoubleManualQuery("PORT1_PHAse", &ManualControlDialog::getPort1Phase);
+    addComplexManualQuery("PORT1_REFerenced", &ManualControlDialog::getPort1Referenced);
+
+    addIntegerManualQuery("PORT2_MIN", &ManualControlDialog::getPort2MinADC);
+    addIntegerManualQuery("PORT2_MAX", &ManualControlDialog::getPort2MaxADC);
+    addDoubleManualQuery("PORT2_MAG", &ManualControlDialog::getPort2Magnitude);
+    addDoubleManualQuery("PORT2_PHAse", &ManualControlDialog::getPort2Phase);
+    addComplexManualQuery("PORT2_REFerenced", &ManualControlDialog::getPort2Referenced);
+
+    addIntegerManualQuery("REF_MIN", &ManualControlDialog::getRefMinADC);
+    addIntegerManualQuery("REF_MAX", &ManualControlDialog::getRefMaxADC);
+    addDoubleManualQuery("REF_MAG", &ManualControlDialog::getRefMagnitude);
+    addDoubleManualQuery("REF_PHAse", &ManualControlDialog::getRefPhase);
+
+    scpi.add(scpi_manual);
 }
 
 void AppWindow::StartTCPServer(int port)
@@ -585,13 +824,18 @@ int AppWindow::UpdateDeviceList()
 
 void AppWindow::StartManualControl()
 {
-    auto control = new ManualControlDialog(*device, this);
-    connect(control, &QDialog::finished, [=](){
+    if(manual) {
+        // dialog already active, nothing to do
+        return;
+    }
+    manual = new ManualControlDialog(*device, this);
+    connect(manual, &QDialog::finished, [=](){
+        manual = nullptr;
         if(device) {
             Mode::getActiveMode()->initializeDevice();
         }
     });
-    control->show();
+    manual->show();
 }
 
 void AppWindow::UpdateReference()
@@ -695,4 +939,14 @@ QStackedWidget *AppWindow::getCentral() const
 Ui::MainWindow *AppWindow::getUi() const
 {
     return ui;
+}
+
+const QString& AppWindow::getAppVersion() const
+{
+    return appVersion;
+}
+
+const QString& AppWindow::getAppGitHash() const
+{
+    return appGitHash;
 }

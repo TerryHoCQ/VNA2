@@ -2,7 +2,7 @@
 #include <QPainter>
 #include <array>
 #include <math.h>
-#include "tracemarker.h"
+#include "Marker/marker.h"
 #include <QDebug>
 #include "preferences.h"
 #include "ui_smithchartdialog.h"
@@ -82,7 +82,7 @@ std::complex<double> TraceSmithChart::pixelToData(QPoint p)
     return complex<double>(data.x() / smithCoordMax, -data.y() / smithCoordMax);
 }
 
-QPoint TraceSmithChart::markerToPixel(TraceMarker *m)
+QPoint TraceSmithChart::markerToPixel(Marker *m)
 {
     QPoint ret = QPoint();
 //    if(!m->isTimeDomain()) {
@@ -145,14 +145,14 @@ void TraceSmithChart::draw(QPainter &p) {
     transform = p.transform();
 
     // Outer circle
-    auto pen = QPen(pref.General.graphColors.axis);
+    auto pen = QPen(pref.Graphs.Color.axis);
     pen.setCosmetic(true);
     p.setPen(pen);
     QRectF rectangle(-smithCoordMax, -smithCoordMax, 2*smithCoordMax, 2*smithCoordMax);
     p.drawArc(rectangle, 0, 5760);
 
     constexpr int Circles = 6;
-    pen = QPen(pref.General.graphColors.divisions, 0.5, Qt::DashLine);
+    pen = QPen(pref.Graphs.Color.divisions, 0.5, Qt::DashLine);
     pen.setCosmetic(true);
     p.setPen(pen);
     for(int i=1;i<Circles;i++) {
@@ -190,7 +190,7 @@ void TraceSmithChart::draw(QPainter &p) {
         for(int i=1;i<nPoints;i++) {
             auto last = trace->sample(i-1);
             auto now = trace->sample(i);
-            if (limitToSpan && (last.x < sweep_fmin || now.x > sweep_fmax)) {
+            if (limitToSpan && (trace->getDataType() == Trace::DataType::Frequency) && (last.x < sweep_fmin || now.x > sweep_fmax)) {
                 continue;
             }
             if(isnan(now.y.real())) {
@@ -337,9 +337,14 @@ bool TraceSmithChart::supported(Trace *t)
 
 bool TraceSmithChart::dropSupported(Trace *t)
 {
-    if(t->outputType() == Trace::DataType::Frequency && t->isReflection()) {
+    if(!t->isReflection()) {
+        return false;
+    }
+    switch(t->outputType()) {
+    case Trace::DataType::Frequency:
+    case Trace::DataType::Power:
         return true;
-    } else {
+    default:
         return false;
     }
 }
